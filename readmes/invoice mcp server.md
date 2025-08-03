@@ -1,3 +1,103 @@
+Core Functionality
+Client Management:
+
+Create, list, and retrieve clients
+Store client details (name, email, address, phone, tax ID)
+
+Invoice Management:
+
+Create invoices with multiple line items
+List invoices with filtering (by status or client)
+Update invoice details and status
+Delete invoices
+Generate PDF-formatted invoice text
+Get invoice summaries and statistics
+
+Key Features:
+
+Automatic invoice numbering (INV-1000, INV-1001, etc.)
+Automatic tax and total calculations
+Invoice status tracking (draft, sent, paid, overdue, cancelled)
+Comprehensive validation using Zod schemas
+In-memory storage (easily replaceable with database)
+
+Available Tools
+
+create_client - Add new clients
+list_clients - View all clients
+get_client - Get specific client details
+create_invoice - Create new invoices with items
+list_invoices - List invoices with optional filtering
+get_invoice - Get specific invoice details
+update_invoice - Modify existing invoices
+delete_invoice - Remove invoices
+generate_invoice_pdf - Create formatted invoice output
+get_invoice_summary - Get business analytics
+Runtime & Imports:
+
+Changed from Node.js to Deno runtime
+Using Deno standard library for HTTP server
+Importing Supabase client from ESM
+
+2. Database Integration:
+
+Replaced in-memory storage with Supabase database
+All operations now use Supabase client
+Proper error handling for database operations
+
+3. HTTP Server Structure:
+
+Uses Deno's serve() function instead of stdio transport
+Handles HTTP requests/responses with JSON
+Added CORS headers for web compatibility
+
+4. Database Schema Requirements:
+You'll need to create these tables in your Supabase database:
+sql-- Clients table
+CREATE TABLE clients (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  name TEXT NOT NULL,
+  email TEXT NOT NULL,
+  address TEXT NOT NULL,
+  phone TEXT,
+  tax_id TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Invoices table
+CREATE TABLE invoices (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  invoice_number TEXT NOT NULL UNIQUE,
+  client_id UUID REFERENCES clients(id),
+  client_name TEXT NOT NULL,
+  client_email TEXT NOT NULL,
+  client_address TEXT NOT NULL,
+  issue_date DATE NOT NULL,
+  due_date DATE NOT NULL,
+  items JSONB NOT NULL,
+  subtotal DECIMAL(10,2) NOT NULL,
+  tax_amount DECIMAL(10,2) NOT NULL,
+  total_amount DECIMAL(10,2) NOT NULL,
+  status TEXT CHECK (status IN ('draft', 'sent', 'paid', 'overdue', 'cancelled')) DEFAULT 'draft',
+  notes TEXT,
+  payment_terms TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+Deployment Steps:
+
+Create the Edge Function:
+
+bashsupabase functions new finji-invoice-mcp
+
+Deploy the function:
+
+bashsupabase functions deploy finji-invoice-mcp
+
+Set environment variables (if needed):
+
+bashsupabase secrets set SUPABASE_URL=your_url
+supabase secrets set SUPABASE_ANON_KEY=your_key
 New Kenya-Specific Features
 1. Natural Language Invoice Creation
 typescript// "20 bags rice at 3000, 5 services at 15000"
