@@ -1,297 +1,4 @@
-if (overdueCount > 0) {
-          responseText += `⚠️ URGENT ACTION REQUIRED:\n`;
-          responseText += `• Pay overdue obligations immediately\n`;
-          responseText += `• Contact KRA if payment plan needed\n`;
-          responseText += `• Risk of compliance certificate denial\n\n`;
-        }
-
-        responseText += `📱 Use Finji to track payments and get reminders!`;
-
-        return {
-          content: [{
-            type: "text",
-            text: responseText
-          }]
-        };
-      }
-
-      case "calculate_tax_liability": {
-        let result = {};
-
-        switch (args.tax_type) {
-          case 'PAYE': {
-            const grossPay = args.amount;
-            const nssfDeduction = calculateNSSF(grossPay);
-            const nhifDeduction = calculateNHIF(grossPay);
-            const housingLevy = calculateHousingLevy(grossPay);
-            const payeTax = calculatePAYE(
-              grossPay, 
-              nssfDeduction, 
-              args.additional_params?.pension_contribution || 0,
-              args.additional_params?.insurance_relief || 0
-            );
-
-            result = {
-              gross_pay: grossPay,
-              nssf_deduction: nssfDeduction,
-              nhif_deduction: nhifDeduction,
-              housing_levy: housingLevy,
-              paye_tax: payeTax,
-              net_pay: grossPay - nssfDeduction - nhifDeduction - housingLevy - payeTax,
-              total_statutory_deductions: nssfDeduction + nhifDeduction + housingLevy + payeTax
-            };
-            break;
-          }
-          case 'VAT': {
-            result = {
-              amount: args.amount,
-              vat_amount: args.amount * KENYA_TAX_RATES.VAT_STANDARD,
-              total_inclusive: args.amount * (1 + KENYA_TAX_RATES.VAT_STANDARD),
-              vat_rate: KENYA_TAX_RATES.VAT_STANDARD
-            };
-            break;
-          }
-          case 'WHT': {
-            const serviceType = args.additional_params?.service_type || 'consultancy';
-            const whtRate = KENYA_TAX_RATES.WHT_RATES[serviceType] || 0.05;
-            result = {
-              invoice_amount: args.amount,
-              wht_rate: whtRate,
-              wht_amount: args.amount * whtRate,
-              net_payment: args.amount - (args.amount * whtRate),
-              service_type: serviceType
-            };
-            break;
-          }
-        }
-
-        return {
-          content: [{
-            type: "text",
-            text: `Tax calculation for ${args.tax_type}:\n${JSON.stringify(result, null, 2)}`
-          }]
-        };
-      }
-
-      case "check_compliance_status": {
-        const complianceScore = await calculateComplianceScore(args.taxpayer_id);
-        
-        const { data: obligations } = await supabase
-          .from('tax_obligations')
-          .select('*')
-          .eq('taxpayer_id', args.taxpayer_id);
-
-        const { data: taxpayer } = await supabase
-          .from('taxpayers')
-          .select('*')
-          .eq('id', args.taxpayer_id)
-          .single();
-
-        const currentDate = new Date();
-        const overdueObligations = obligations?.filter(o => 
-          new Date(o.due_date) < currentDate && o.status !== 'paid'
-        ) || [];
-
-        const complianceStatus = {
-          taxpayer_name: taxpayer?.business_name,
-          kra_pin: taxpayer?.kra_pin,
-          compliance_score: complianceScore.score,
-          risk_level: complianceScore.risk_level,
-          total_obligations: obligations?.length || 0,
-          paid_obligations: obligations?.filter(o => o.status === 'paid').length || 0,
-          overdue_obligations: overdueObligations.length,
-          total_amount_due: obligations?.reduce((sum, o) => sum + (o.amount_due - o.amount_paid), 0) || 0,
-          compliance_certificate_eligible: complianceScore.certificate_eligibility,
-          recommendations: complianceScore.improvement_tips
-        };
-
-        return {
-          content: [{
-            type: "text",
-            text: `Compliance Status Report:\n${JSON.stringify(complianceStatus, null, 2)}`
-          }]
-        };
-      }
-
-      case "get_kra_rates": {
-        let rates = KENYA_TAX_RATES;
-        if (args.rate_type && args.rate_type !== 'all') {
-          switch (args.rate_type) {
-            case 'VAT':
-              rates = { VAT_STANDARD: KENYA_TAX_RATES.VAT_STANDARD };
-              break;
-            case 'PAYE':
-              rates = { PAYE_BANDS: PAYE_TAX_BANDS, PERSONAL_RELIEF: KENYA_TAX_RATES.PAYE_PERSONAL_RELIEF };
-              break;
-            case 'WHT':
-              rates = { WHT_RATES: KENYA_TAX_RATES.WHT_RATES };
-              break;
-            default:
-              rates = KENYA_TAX_RATES;
-          }
-        }
-
-        return {
-          content: [{
-            type: "text",
-            text: `KRA Tax Rates:\n${JSON.stringify(rates, null, 2)}`
-          }]
-        };
-      }
-
-      case "generate_tax_report": {
-        const { data: taxpayer } = await supabase
-          .from('taxpayers')
-          .select('*')
-          .eq('id', args.taxpayer_id)
-          .single();
-
-        const { data: obligations } = await supabase
-          .from('tax_obligations')
-          .select('*')
-          .eq('taxpayer_id', args.taxpayer_id)
-          .gte('period_start', args.period_start)
-          .lte('period_end', args.period_end);
-
-        const report = {
-          taxpayer: taxpayer,
-          period: `${args.period_start} to ${args.period_end}`,
-          summary: {
-            total_obligations: obligations?.length || 0,
-            paid_obligations: obligations?.filter(o => o.status === 'paid').length || 0,
-            pending_amount: obligations?.reduce((sum, o) => sum + (o.amount_due - o.amount_paid), 0) || 0
-          },
-          obligations: obligations
-        };
-
-        return {
-          content: [{
-            type: "text",
-            text: `Tax Report:\n${JSON.stringify(report, null, 2)}`
-          }]
-        };
-      }
-
-      case "update_payment_status": {
-        const { data, error } = await supabase
-          .from('tax_obligations')
-          .update({
-            amount_paid: args.amount_paid,
-            status: 'paid',
-            updated_at: new Date().toISOString()
-          })
-          .eq('id', args.obligation_id)
-          .select()
-          .single();
-
-        if (error) throw error;
-
-        await logAuditTrail('PAYMENT_UPDATED', data.taxpayer_id, null, data);
-
-        return {
-          content: [{
-            type: "text",
-            text: `Payment status updated successfully:\n${JSON.stringify(data, null, 2)}`
-          }]
-        };
-      }
-
-      case "list_taxpayers": {
-        let query = supabase
-          .from('taxpayers')
-          .select('*')
-          .order('created_at', { ascending: false });
-
-        if (args.business_type) {
-          query = query.eq('business_type', args.business_type);
-        }
-
-        if (args.vat_registered !== undefined) {
-          query = query.eq('is_vat_registered', args.vat_registered);
-        }
-
-        const { data, error } = await query;
-        if (error) throw error;
-
-        return {
-          content: [{
-            type: "text",
-            text: `Taxpayers (${data.length}):\n${JSON.stringify(data, null, 2)}`
-          }]
-        };
-      }
-
-      default:
-        throw new Error(`Unknown tool: ${name}`);
-    }
-  } catch (error) {
-    return {
-      content: [{
-        type: "text",
-        text: `Error: ${error instanceof Error ? error.message : String(error)}`
-      }],
-      isError: true
-    };
-  }
-}
-
-// Main handler
-serve(async (req) => {
-  if (req.method === 'OPTIONS') {
-    return new Response(null, {
-      status: 200,
-      headers: {
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-        'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-      },
-    });
-  }
-
-  try {
-    const body = await req.json();
-    
-    if (body.method === 'tools/list') {
-      return new Response(JSON.stringify({ tools }), {
-        headers: { 
-          'Content-Type': 'application/json',
-          'Access-Control-Allow-Origin': '*'
-        },
-      });
-    }
-    
-    if (body.method === 'tools/call') {
-      const { name, arguments: args } = body.params;
-      const result = await handleTool(name, args);
-      
-      return new Response(JSON.stringify(result), {
-        headers: { 
-          'Content-Type': 'application/json',
-          'Access-Control-Allow-Origin': '*'
-        },
-      });
-    }
-
-    return new Response(JSON.stringify({ error: 'Unknown method' }), {
-      status: 400,
-      headers: { 
-        'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': '*'
-      },
-    });
-
-  } catch (error) {
-    return new Response(JSON.stringify({ 
-      error: error instanceof Error ? error.message : 'Unknown error' 
-    }), {
-      status: 500,
-      headers: { 
-        'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': '*'
-      },
-    });
-  }
-});// Enhanced Supabase Edge Function for Kenya Tax Compliance MCP Server
+// Enhanced Supabase Edge Function for Kenya Tax Compliance MCP Server
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
@@ -311,8 +18,6 @@ interface TaxPayer {
   business_sector: string;
   annual_turnover?: number;
   is_vat_registered: boolean;
-  compliance_score: number; // 0-100
-  risk_level: 'low' | 'medium' | 'high';
   created_at: string;
 }
 
@@ -335,7 +40,7 @@ interface VATReturn {
   due_date: string;
   status: 'draft' | 'filed' | 'paid' | 'overdue';
   kra_receipt_number?: string;
-  submission_queue_id?: string;
+  auto_penalties_calculated: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -360,7 +65,7 @@ interface PAYEReturn {
   due_date: string;
   status: 'draft' | 'filed' | 'paid' | 'overdue';
   p9_forms: EmployeeP9[];
-  submission_queue_id?: string;
+  auto_penalties_calculated: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -396,7 +101,6 @@ interface WithholdingTax {
   payment_date: string;
   filing_date: string;
   status: 'draft' | 'filed' | 'paid';
-  submission_queue_id?: string;
   created_at: string;
 }
 
@@ -413,6 +117,7 @@ interface TaxObligation {
   penalties: number;
   interest: number;
   compliance_certificate_valid: boolean;
+  auto_calculated_penalties: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -421,12 +126,13 @@ interface TaxObligation {
 interface KRASubmissionQueue {
   id: string;
   taxpayer_id: string;
-  return_type: 'VAT' | 'PAYE' | 'WHT';
-  data: any;
-  status: 'pending' | 'submitted' | 'failed' | 'retry';
+  return_type: 'VAT' | 'PAYE' | 'WHT' | 'CORPORATION_TAX';
+  return_data: any;
+  submission_status: 'pending' | 'submitted' | 'failed' | 'rejected';
   retry_count: number;
+  last_attempt: string;
   error_message?: string;
-  scheduled_submission: string;
+  kra_reference?: string;
   created_at: string;
   updated_at: string;
 }
@@ -434,39 +140,47 @@ interface KRASubmissionQueue {
 // NEW: Tax Audit Log for compliance tracking
 interface TaxAuditLog {
   id: string;
-  action: string;
   taxpayer_id: string;
+  action: string;
+  entity_type: 'VAT_RETURN' | 'PAYE_RETURN' | 'WHT' | 'OBLIGATION' | 'TAXPAYER';
+  entity_id: string;
   user_id?: string;
-  before_data: any;
-  after_data: any;
+  before_data?: any;
+  after_data?: any;
   timestamp: string;
   ip_address?: string;
   user_agent?: string;
+  notes?: string;
 }
 
-// NEW: Compliance Score interface
+// NEW: Compliance Score tracking
 interface ComplianceScore {
+  id: string;
+  taxpayer_id: string;
   score: number; // 0-100
-  risk_level: 'low' | 'medium' | 'high';
-  improvement_tips: string[];
-  certificate_eligibility: boolean;
+  risk_level: 'low' | 'medium' | 'high' | 'critical';
   factors: {
     timely_filing: number;
     payment_history: number;
-    penalty_frequency: number;
-    documentation_quality: number;
+    accuracy: number;
+    completeness: number;
   };
+  improvement_tips: string[];
+  certificate_eligibility: boolean;
+  last_calculated: string;
+  created_at: string;
+  updated_at: string;
 }
 
-// NEW: Monthly Tax Estimation
+// NEW: Monthly Tax Estimate
 interface MonthlyTaxEstimate {
-  estimated_vat: number;
-  estimated_paye: number;
-  estimated_wht: number;
-  estimated_total: number;
+  vat_estimate: number;
+  paye_estimate: number;
+  wht_estimate: number;
+  total_estimate: number;
   cash_flow_impact: number;
   recommendations: string[];
-  next_payment_dates: { [key: string]: string };
+  confidence_level: 'high' | 'medium' | 'low';
 }
 
 // Initialize Supabase client
@@ -474,7 +188,7 @@ const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
 const supabaseKey = Deno.env.get('SUPABASE_ANON_KEY')!;
 const supabase = createClient(supabaseUrl, supabaseKey);
 
-// Kenya Tax Constants (Enhanced)
+// Enhanced Kenya Tax Constants with KRA holidays
 const KENYA_TAX_RATES = {
   VAT_STANDARD: 0.16,
   VAT_ZERO: 0.0,
@@ -485,6 +199,8 @@ const KENYA_TAX_RATES = {
   NHIF_MAX: 1700,
   HOUSING_LEVY_RATE: 0.015,
   AFFORDABLE_HOUSING_LEVY_RATE: 0.015,
+  PENALTY_RATE: 0.05, // 5% penalty
+  INTEREST_RATE_PER_DAY: 0.01, // 1% per day
   WHT_RATES: {
     consultancy: 0.05,
     professional: 0.05,
@@ -495,11 +211,7 @@ const KENYA_TAX_RATES = {
     dividend: 0.05,
     interest: 0.15,
     royalty: 0.05
-  },
-  // NEW: Penalty rates
-  LATE_FILING_PENALTY_RATE: 0.05, // 5% of tax due
-  DAILY_INTEREST_RATE: 0.01, // 1% per day
-  VAT_REGISTRATION_THRESHOLD: 5000000 // KES 5M annual turnover
+  }
 };
 
 const PAYE_TAX_BANDS = [
@@ -508,173 +220,179 @@ const PAYE_TAX_BANDS = [
   { min: 32334, max: Infinity, rate: 0.30 }
 ];
 
-// NEW: KRA Holidays for deadline calculations
-const KRA_HOLIDAYS = [
-  '2024-01-01', '2024-04-29', '2024-05-01', '2024-06-01', 
-  '2024-10-20', '2024-12-12', '2024-12-25', '2024-12-26'
+// KRA Public Holidays (for deadline calculations)
+const KRA_HOLIDAYS_2025 = [
+  '2025-01-01', // New Year
+  '2025-04-18', // Good Friday
+  '2025-04-21', // Easter Monday
+  '2025-05-01', // Labour Day
+  '2025-06-01', // Madaraka Day
+  '2025-10-20', // Mashujaa Day
+  '2025-12-12', // Jamhuri Day
+  '2025-12-25', // Christmas
+  '2025-12-26'  // Boxing Day
 ];
 
-// Enhanced Utility functions
+// Enhanced Utility Functions
 function generateId(): string {
   return crypto.randomUUID();
 }
 
 function validateKRAPIN(pin: string): { valid: boolean; error?: string } {
   const kraRegex = /^[A-Z]\d{9}[A-Z]$/;
-  if (!pin) {
-    return { valid: false, error: "KRA PIN haikupatikana! Ingiza PIN yako ya KRA." };
-  }
   if (!kraRegex.test(pin)) {
-    return { 
-      valid: false, 
-      error: "KRA PIN yapotea! Lazima iwe kama hii: A123456789B (herufi, nambari 9, herufi)" 
+    return {
+      valid: false,
+      error: "KRA PIN yapotea! Lazima iwe kama hii: A123456789B (herufi, nambari 9, herufi)"
     };
   }
   return { valid: true };
 }
 
-// NEW: Enhanced date handling with KRA holidays and weekends
+function daysBetween(date1: string, date2: string): number {
+  const d1 = new Date(date1);
+  const d2 = new Date(date2);
+  const diffTime = Math.abs(d2.getTime() - d1.getTime());
+  return Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+}
+
+function isWeekend(date: Date): boolean {
+  const day = date.getDay();
+  return day === 0 || day === 6; // Sunday or Saturday
+}
+
+function isKRAHoliday(date: Date): boolean {
+  const dateStr = date.toISOString().split('T')[0];
+  return KRA_HOLIDAYS_2025.includes(dateStr);
+}
+
 function adjustForWeekends(date: Date): Date {
-  const adjusted = new Date(date);
+  let adjusted = new Date(date);
   
-  // If it falls on Saturday, move to Monday
-  if (adjusted.getDay() === 6) {
-    adjusted.setDate(adjusted.getDate() + 2);
-  }
-  // If it falls on Sunday, move to Monday
-  else if (adjusted.getDay() === 0) {
+  // If falls on weekend or holiday, move to next business day
+  while (isWeekend(adjusted) || isKRAHoliday(adjusted)) {
     adjusted.setDate(adjusted.getDate() + 1);
-  }
-  
-  // Check for KRA holidays
-  const dateStr = adjusted.toISOString().split('T')[0];
-  if (KRA_HOLIDAYS.includes(dateStr)) {
-    adjusted.setDate(adjusted.getDate() + 1);
-    return adjustForWeekends(adjusted); // Recursive check
   }
   
   return adjusted;
 }
 
 function getKRADeadline(taxType: string, period: Date): Date {
-  const deadline = calculateNextDueDate(taxType, period);
-  return adjustForWeekends(new Date(deadline));
+  const deadline = new Date(period);
+  deadline.setMonth(deadline.getMonth() + 1);
+  
+  switch (taxType) {
+    case 'VAT':
+    case 'PAYE':
+    case 'WHT':
+      deadline.setDate(20); // Due 20th of following month
+      break;
+    case 'CORPORATION_TAX':
+      deadline.setMonth(deadline.getMonth() + 5); // 6 months after year end
+      deadline.setDate(30);
+      break;
+    default:
+      deadline.setDate(20);
+  }
+  
+  return adjustForWeekends(deadline);
 }
 
-// NEW: Calculate penalties automatically
-function calculatePenalties(dueDate: string, currentDate: string, amount: number): number {
-  const due = new Date(dueDate);
-  const current = new Date(currentDate);
-  const daysLate = Math.floor((current.getTime() - due.getTime()) / (1000 * 60 * 60 * 24));
+function calculatePenalties(dueDate: string, currentDate: string, amount: number): { penalties: number; interest: number } {
+  const daysLate = daysBetween(dueDate, currentDate);
+  let penalties = 0;
+  let interest = 0;
   
-  if (daysLate <= 0) return 0;
+  if (daysLate > 0) {
+    // KRA penalty structure: 5% penalty + 1% per day interest
+    penalties = amount * KENYA_TAX_RATES.PENALTY_RATE;
+    interest = amount * (daysLate * KENYA_TAX_RATES.INTEREST_RATE_PER_DAY);
+  }
   
-  // KRA penalty structure: 5% of tax due + 1% per day
-  const basePenalty = amount * KENYA_TAX_RATES.LATE_FILING_PENALTY_RATE;
-  const dailyInterest = daysLate * amount * (KENYA_TAX_RATES.DAILY_INTEREST_RATE / 100);
-  
-  return Math.round(basePenalty + dailyInterest);
+  return { penalties, interest };
 }
 
-// NEW: Calculate compliance score
-async function calculateComplianceScore(taxpayerId: string): Promise<ComplianceScore> {
-  // Get historical data
-  const { data: obligations } = await supabase
-    .from('tax_obligations')
-    .select('*')
-    .eq('taxpayer_id', taxpayerId);
-
-  const { data: auditLogs } = await supabase
-    .from('tax_audit_logs')
-    .select('*')
-    .eq('taxpayer_id', taxpayerId)
-    .order('timestamp', { ascending: false })
-    .limit(100);
-
+function calculateComplianceScore(taxpayer: any, obligations: any[], returns: any[]): ComplianceScore {
   const currentDate = new Date();
-  const sixMonthsAgo = new Date();
-  sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
-
+  const lastYear = new Date(currentDate);
+  lastYear.setFullYear(lastYear.getFullYear() - 1);
+  
   // Calculate factors
-  const recentObligations = obligations?.filter(o => 
-    new Date(o.created_at) >= sixMonthsAgo
-  ) || [];
-
+  const recentObligations = obligations.filter(o => new Date(o.created_at) >= lastYear);
   const timelyFiled = recentObligations.filter(o => 
-    o.status === 'paid' && new Date(o.updated_at) <= new Date(o.due_date)
+    o.status === 'filed' || o.status === 'paid'
   ).length;
-
-  const totalObligations = recentObligations.length || 1;
-  const timelyFilingScore = (timelyFiled / totalObligations) * 100;
-
-  const totalPenalties = obligations?.reduce((sum, o) => sum + o.penalties, 0) || 0;
-  const penaltyScore = Math.max(0, 100 - (totalPenalties / 10000)); // Reduce score based on penalties
-
-  const overdue = obligations?.filter(o => 
+  
+  const timelyFilingScore = recentObligations.length > 0 ? 
+    (timelyFiled / recentObligations.length) * 100 : 100;
+  
+  const overdueCount = obligations.filter(o => 
     new Date(o.due_date) < currentDate && o.status !== 'paid'
-  ).length || 0;
-
-  const paymentHistoryScore = Math.max(0, 100 - (overdue * 20));
-
-  const documentationScore = auditLogs?.length > 10 ? 90 : 70; // Based on activity
-
-  const factors = {
-    timely_filing: Math.round(timelyFilingScore),
-    payment_history: Math.round(paymentHistoryScore),
-    penalty_frequency: Math.round(penaltyScore),
-    documentation_quality: documentationScore
-  };
-
+  ).length;
+  
+  const paymentHistoryScore = Math.max(0, 100 - (overdueCount * 10));
+  
+  // Simple accuracy and completeness scores (can be enhanced with actual data)
+  const accuracyScore = 90; // Placeholder
+  const completenessScore = 85; // Placeholder
+  
   const overallScore = Math.round(
-    (factors.timely_filing * 0.3) +
-    (factors.payment_history * 0.4) +
-    (factors.penalty_frequency * 0.2) +
-    (factors.documentation_quality * 0.1)
+    (timelyFilingScore * 0.3) + 
+    (paymentHistoryScore * 0.4) + 
+    (accuracyScore * 0.15) + 
+    (completenessScore * 0.15)
   );
-
-  let riskLevel: 'low' | 'medium' | 'high' = 'low';
-  if (overallScore < 50) riskLevel = 'high';
-  else if (overallScore < 75) riskLevel = 'medium';
-
-  const improvementTips = [];
-  if (factors.timely_filing < 80) improvementTips.push("File tax returns before due dates");
-  if (factors.payment_history < 80) improvementTips.push("Pay all outstanding tax obligations");
-  if (factors.penalty_frequency < 80) improvementTips.push("Set up payment reminders to avoid penalties");
-  if (overdue > 0) improvementTips.push("Clear all overdue obligations immediately");
-
+  
+  let riskLevel: 'low' | 'medium' | 'high' | 'critical';
+  if (overallScore >= 80) riskLevel = 'low';
+  else if (overallScore >= 60) riskLevel = 'medium';
+  else if (overallScore >= 40) riskLevel = 'high';
+  else riskLevel = 'critical';
+  
+  const tips = [];
+  if (timelyFilingScore < 80) tips.push("File returns on time to improve your score");
+  if (paymentHistoryScore < 80) tips.push("Pay taxes before due dates");
+  if (overdueCount > 0) tips.push("Clear all overdue obligations immediately");
+  if (overallScore < 60) tips.push("Consider setting up payment reminders");
+  
   return {
+    id: generateId(),
+    taxpayer_id: taxpayer.id,
     score: overallScore,
     risk_level: riskLevel,
-    improvement_tips: improvementTips,
-    certificate_eligibility: overallScore >= 75 && overdue === 0,
-    factors
+    factors: {
+      timely_filing: timelyFilingScore,
+      payment_history: paymentHistoryScore,
+      accuracy: accuracyScore,
+      completeness: completenessScore
+    },
+    improvement_tips: tips,
+    certificate_eligibility: overallScore >= 80 && overdueCount === 0,
+    last_calculated: new Date().toISOString(),
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString()
   };
 }
 
-// NEW: Log audit trail
-async function logAuditTrail(
-  action: string,
-  taxpayerId: string,
-  beforeData: any,
-  afterData: any,
-  userId?: string,
-  ipAddress?: string
-): Promise<void> {
+async function logAuditTrail(action: string, taxpayerId: string, entityType: string, entityId: string, beforeData?: any, afterData?: any, userId?: string): Promise<void> {
   const auditLog: TaxAuditLog = {
     id: generateId(),
-    action,
     taxpayer_id: taxpayerId,
+    action,
+    entity_type: entityType as any,
+    entity_id: entityId,
     user_id: userId,
     before_data: beforeData,
     after_data: afterData,
     timestamp: new Date().toISOString(),
-    ip_address: ipAddress
+    ip_address: undefined, // Can be extracted from request headers
+    user_agent: undefined,
+    notes: undefined
   };
-
+  
   await supabase.from('tax_audit_logs').insert([auditLog]);
 }
 
-// Existing utility functions (enhanced with error handling)
 function calculatePAYE(grossPay: number, nssfDeduction: number, pensionContribution: number = 0, insuranceRelief: number = 0): number {
   const taxableIncome = Math.max(0, grossPay - nssfDeduction - pensionContribution - KENYA_TAX_RATES.PAYE_PERSONAL_RELIEF - Math.min(insuranceRelief, KENYA_TAX_RATES.INSURANCE_RELIEF_MAX));
   
@@ -690,7 +408,7 @@ function calculatePAYE(grossPay: number, nssfDeduction: number, pensionContribut
 }
 
 function calculateNSSF(grossPay: number): number {
-  const pensionablePay = Math.min(grossPay, 18000);
+  const pensionablePay = Math.min(grossPay, 18000); // NSSF ceiling
   return Math.round(pensionablePay * KENYA_TAX_RATES.NSSF_RATE);
 }
 
@@ -728,32 +446,15 @@ function calculateHousingLevy(grossPay: number): number {
 }
 
 function calculateNextDueDate(obligationType: string, currentDate: Date): string {
-  const nextMonth = new Date(currentDate);
-  nextMonth.setMonth(nextMonth.getMonth() + 1);
-  
-  switch (obligationType) {
-    case 'VAT':
-    case 'PAYE':
-    case 'WHT':
-      nextMonth.setDate(20);
-      break;
-    case 'CORPORATION_TAX':
-      nextMonth.setMonth(nextMonth.getMonth() + 5);
-      nextMonth.setDate(30);
-      break;
-    default:
-      nextMonth.setDate(20);
-  }
-  
-  return nextMonth.toISOString().split('T')[0];
+  return getKRADeadline(obligationType, currentDate).toISOString().split('T')[0];
 }
 
 // Enhanced MCP Tools
 const tools = [
-  // Existing tools remain the same but with enhanced error handling...
+  // Existing tools...
   {
     name: "register_taxpayer",
-    description: "Register a new taxpayer with KRA details - supports Swahili error messages",
+    description: "Register a new taxpayer with KRA details",
     inputSchema: {
       type: "object",
       properties: {
@@ -782,141 +483,131 @@ const tools = [
     }
   },
 
-  // NEW: SME-Friendly Features
+  // NEW: Monthly Tax Estimation Tool
   {
     name: "estimate_monthly_taxes",
-    description: "Quick tax estimate for planning - perfect for Finji users who need to plan cash flow",
+    description: "Quick tax estimate for monthly planning - perfect for SME cash flow management",
     inputSchema: {
       type: "object",
       properties: {
-        monthly_revenue: { type: "number", description: "Expected monthly revenue in KES" },
-        monthly_expenses: { type: "number", description: "Expected monthly expenses in KES" },
+        monthly_revenue: { type: "number", description: "Expected monthly revenue" },
+        monthly_expenses: { type: "number", description: "Expected monthly expenses" },
         employee_count: { type: "number", description: "Number of employees" },
         average_salary: { type: "number", description: "Average employee salary" },
         business_type: { 
           type: "string", 
           enum: ["individual", "partnership", "company", "trust", "cooperative"],
-          description: "Type of business entity" 
+          description: "Business type for tax calculations" 
         },
         is_vat_registered: { type: "boolean", description: "VAT registration status" },
-        has_withholding_payments: { type: "boolean", description: "Do you make payments subject to WHT?" }
+        has_rental_income: { type: "boolean", description: "Has rental income" },
+        consultant_payments: { type: "number", description: "Monthly payments to consultants", default: 0 }
       },
-      required: ["monthly_revenue", "monthly_expenses", "business_type", "is_vat_registered"]
+      required: ["monthly_revenue", "monthly_expenses", "employee_count", "business_type", "is_vat_registered"]
     }
   },
 
+  // NEW: Sync M-Pesa payments to tax obligations
   {
     name: "sync_payments_to_tax",
-    description: "Match M-Pesa/bank payments to tax obligations - bridges with Finji's payment tracking",
+    description: "Match M-Pesa/bank payments to tax obligations automatically",
     inputSchema: {
       type: "object",
       properties: {
         taxpayer_id: { type: "string", description: "Taxpayer ID" },
-        payment_reference: { type: "string", description: "M-Pesa or bank transaction reference" },
-        amount: { type: "number", description: "Payment amount" },
-        payment_date: { type: "string", description: "Payment date (YYYY-MM-DD)" },
-        payment_method: { 
-          type: "string", 
-          enum: ["mpesa", "bank_transfer", "cheque", "cash"],
-          description: "Payment method used" 
+        payment_data: {
+          type: "array",
+          description: "Payment transactions from M-Pesa/bank",
+          items: {
+            type: "object",
+            properties: {
+              transaction_id: { type: "string", description: "Transaction ID" },
+              amount: { type: "number", description: "Payment amount" },
+              date: { type: "string", description: "Payment date" },
+              recipient: { type: "string", description: "Payment recipient" },
+              description: { type: "string", description: "Payment description" }
+            }
+          }
         },
-        tax_type: { 
-          type: "string", 
-          enum: ["VAT", "PAYE", "WHT", "CORPORATION_TAX"],
-          description: "Type of tax being paid (optional - will auto-detect)" 
-        }
+        auto_match: { type: "boolean", description: "Automatically match payments", default: true }
       },
-      required: ["taxpayer_id", "payment_reference", "amount", "payment_date", "payment_method"]
+      required: ["taxpayer_id", "payment_data"]
     }
   },
 
+  // NEW: Enhanced compliance status with scoring
   {
     name: "get_compliance_score",
-    description: "Get detailed compliance scoring and recommendations for improvement",
+    description: "Get detailed compliance score and improvement recommendations",
     inputSchema: {
       type: "object",
       properties: {
-        taxpayer_id: { type: "string", description: "Taxpayer ID" }
+        taxpayer_id: { type: "string", description: "Taxpayer ID" },
+        recalculate: { type: "boolean", description: "Force recalculation of score", default: false }
       },
       required: ["taxpayer_id"]
     }
   },
 
+  // NEW: Automatic penalty calculation
+  {
+    name: "calculate_auto_penalties",
+    description: "Calculate and update penalties for overdue obligations",
+    inputSchema: {
+      type: "object",
+      properties: {
+        taxpayer_id: { type: "string", description: "Taxpayer ID" },
+        obligation_id: { type: "string", description: "Specific obligation ID (optional)" },
+        apply_penalties: { type: "boolean", description: "Apply calculated penalties", default: false }
+      },
+      required: ["taxpayer_id"]
+    }
+  },
+
+  // NEW: KRA submission queue management
   {
     name: "queue_kra_submission",
-    description: "Queue tax returns for submission to KRA (offline-first approach)",
+    description: "Queue tax return for KRA submission with retry logic",
     inputSchema: {
       type: "object",
       properties: {
         taxpayer_id: { type: "string", description: "Taxpayer ID" },
         return_type: { 
           type: "string", 
-          enum: ["VAT", "PAYE", "WHT"],
+          enum: ["VAT", "PAYE", "WHT", "CORPORATION_TAX"],
           description: "Type of return to submit" 
         },
-        return_id: { type: "string", description: "ID of the return to submit" },
-        scheduled_date: { type: "string", description: "When to submit (YYYY-MM-DD HH:mm)" }
+        return_id: { type: "string", description: "Return ID to submit" },
+        priority: { 
+          type: "string", 
+          enum: ["low", "normal", "high", "urgent"],
+          description: "Submission priority",
+          default: "normal"
+        }
       },
       required: ["taxpayer_id", "return_type", "return_id"]
     }
   },
 
+  // NEW: Smart deadline reminders
   {
-    name: "check_vat_registration_requirement",
-    description: "Check if business needs to register for VAT based on turnover",
-    inputSchema: {
-      type: "object",
-      properties: {
-        annual_turnover: { type: "number", description: "Annual turnover in KES" },
-        business_type: { type: "string", description: "Type of business" },
-        projected_growth: { type: "number", description: "Expected growth percentage (optional)" }
-      },
-      required: ["annual_turnover", "business_type"]
-    }
-  },
-
-  {
-    name: "generate_tax_calendar",
-    description: "Generate personalized tax calendar with all due dates and reminders",
+    name: "get_upcoming_deadlines",
+    description: "Get upcoming tax deadlines with smart reminders",
     inputSchema: {
       type: "object",
       properties: {
         taxpayer_id: { type: "string", description: "Taxpayer ID" },
-        year: { type: "number", description: "Year for calendar generation" },
-        reminder_days: { type: "number", description: "Days before due date to remind", default: 7 }
+        days_ahead: { type: "number", description: "Days to look ahead", default: 30 },
+        include_estimates: { type: "boolean", description: "Include estimated amounts", default: true }
       },
-      required: ["taxpayer_id", "year"]
+      required: ["taxpayer_id"]
     }
   },
 
-  {
-    name: "simulate_tax_scenarios",
-    description: "Simulate different business scenarios and their tax implications",
-    inputSchema: {
-      type: "object",
-      properties: {
-        base_revenue: { type: "number", description: "Current monthly revenue" },
-        scenarios: {
-          type: "array",
-          items: {
-            type: "object",
-            properties: {
-              name: { type: "string" },
-              revenue_change: { type: "number", description: "Percentage change in revenue" },
-              expense_change: { type: "number", description: "Percentage change in expenses" },
-              employee_change: { type: "number", description: "Change in number of employees" }
-            }
-          }
-        }
-      },
-      required: ["base_revenue", "scenarios"]
-    }
-  },
-
-  // Enhanced existing tools with better error handling
+  // Enhanced existing tools with better error handling...
   {
     name: "file_vat_return",
-    description: "File a VAT return for a specific period with enhanced validation",
+    description: "File a VAT return for a specific period with auto penalty calculation",
     inputSchema: {
       type: "object",
       properties: {
@@ -925,8 +616,8 @@ const tools = [
         period_year: { type: "number", description: "Year" },
         taxable_supplies: { type: "number", description: "Total taxable supplies" },
         taxable_purchases: { type: "number", description: "Total taxable purchases" },
-        imported_services: { type: "number", description: "Imported services value" },
-        auto_calculate_penalties: { type: "boolean", description: "Auto-calculate penalties if late", default: true }
+        imported_services: { type: "number", description: "Imported services value", default: 0 },
+        auto_calculate_penalties: { type: "boolean", description: "Auto calculate penalties if late", default: true }
       },
       required: ["taxpayer_id", "period_month", "period_year", "taxable_supplies", "taxable_purchases"]
     }
@@ -934,7 +625,7 @@ const tools = [
 
   {
     name: "file_paye_return",
-    description: "File a PAYE return with employee details and automatic calculations",
+    description: "File a PAYE return with employee details and auto penalty calculation",
     inputSchema: {
       type: "object",
       properties: {
@@ -957,16 +648,38 @@ const tools = [
             required: ["employee_kra_pin", "employee_name", "basic_salary", "allowances"]
           }
         },
-        auto_calculate_penalties: { type: "boolean", description: "Auto-calculate penalties if late", default: true }
+        auto_calculate_penalties: { type: "boolean", description: "Auto calculate penalties if late", default: true }
       },
       required: ["taxpayer_id", "period_month", "period_year", "employees"]
     }
   },
 
-  // Continue with other enhanced existing tools...
+  {
+    name: "file_withholding_tax",
+    description: "File withholding tax for payments to suppliers",
+    inputSchema: {
+      type: "object",
+      properties: {
+        taxpayer_id: { type: "string", description: "Taxpayer ID" },
+        period_month: { type: "number", description: "Month (1-12)" },
+        period_year: { type: "number", description: "Year" },
+        supplier_pin: { type: "string", description: "Supplier KRA PIN" },
+        supplier_name: { type: "string", description: "Supplier name" },
+        invoice_amount: { type: "number", description: "Invoice amount" },
+        service_type: { 
+          type: "string", 
+          enum: ["consultancy", "professional", "management", "technical", "rental", "commission", "other"],
+          description: "Type of service" 
+        },
+        payment_date: { type: "string", description: "Payment date (YYYY-MM-DD)" }
+      },
+      required: ["taxpayer_id", "period_month", "period_year", "supplier_pin", "supplier_name", "invoice_amount", "service_type", "payment_date"]
+    }
+  },
+
   {
     name: "get_tax_obligations",
-    description: "Get all tax obligations for a taxpayer with enhanced filtering",
+    description: "Get all tax obligations for a taxpayer",
     inputSchema: {
       type: "object",
       properties: {
@@ -975,57 +688,126 @@ const tools = [
           type: "string", 
           enum: ["pending", "filed", "paid", "overdue", "defaulted"],
           description: "Filter by obligation status (optional)" 
-        },
-        include_penalties: { type: "boolean", description: "Include penalty calculations", default: true },
-        language: { type: "string", enum: ["en", "sw"], description: "Response language", default: "en" }
+        }
       },
       required: ["taxpayer_id"]
+    }
+  },
+
+  {
+    name: "calculate_tax_liability",
+    description: "Calculate tax liability for different tax types",
+    inputSchema: {
+      type: "object",
+      properties: {
+        tax_type: { 
+          type: "string", 
+          enum: ["PAYE", "VAT", "WHT"],
+          description: "Type of tax to calculate" 
+        },
+        amount: { type: "number", description: "Base amount for calculation" },
+        additional_params: { 
+          type: "object", 
+          description: "Additional parameters (NSSF, allowances, etc.)" 
+        }
+      },
+      required: ["tax_type", "amount"]
+    }
+  },
+
+  {
+    name: "check_compliance_status",
+    description: "Check compliance status and generate compliance certificate eligibility",
+    inputSchema: {
+      type: "object",
+      properties: {
+        taxpayer_id: { type: "string", description: "Taxpayer ID" }
+      },
+      required: ["taxpayer_id"]
+    }
+  },
+
+  {
+    name: "get_kra_rates",
+    description: "Get current KRA tax rates and thresholds",
+    inputSchema: {
+      type: "object",
+      properties: {
+        rate_type: { 
+          type: "string", 
+          enum: ["all", "VAT", "PAYE", "WHT", "NHIF", "NSSF"],
+          description: "Specific rate type or 'all' for all rates" 
+        }
+      }
+    }
+  },
+
+  {
+    name: "generate_tax_report",
+    description: "Generate comprehensive tax report for a period",
+    inputSchema: {
+      type: "object",
+      properties: {
+        taxpayer_id: { type: "string", description: "Taxpayer ID" },
+        period_start: { type: "string", description: "Period start date (YYYY-MM-DD)" },
+        period_end: { type: "string", description: "Period end date (YYYY-MM-DD)" },
+        report_type: { 
+          type: "string", 
+          enum: ["summary", "detailed", "compliance"],
+          description: "Type of report to generate" 
+        }
+      },
+      required: ["taxpayer_id", "period_start", "period_end", "report_type"]
+    }
+  },
+
+  {
+    name: "update_payment_status",
+    description: "Update payment status for tax obligations",
+    inputSchema: {
+      type: "object",
+      properties: {
+        obligation_id: { type: "string", description: "Tax obligation ID" },
+        amount_paid: { type: "number", description: "Amount paid" },
+        payment_date: { type: "string", description: "Payment date (YYYY-MM-DD)" },
+        kra_receipt_number: { type: "string", description: "KRA receipt number" }
+      },
+      required: ["obligation_id", "amount_paid", "payment_date"]
+    }
+  },
+
+  {
+    name: "list_taxpayers",
+    description: "List all registered taxpayers with optional filtering",
+    inputSchema: {
+      type: "object",
+      properties: {
+        business_type: { 
+          type: "string", 
+          enum: ["individual", "partnership", "company", "trust", "cooperative"],
+          description: "Filter by business type (optional)" 
+        },
+        vat_registered: { type: "boolean", description: "Filter by VAT registration status (optional)" }
+      }
     }
   }
 ];
 
-// Enhanced Tool handlers with better error handling
+// Enhanced Tool Handlers with better error handling and new features
 async function handleTool(name: string, args: any): Promise<any> {
   try {
     switch (name) {
       case "register_taxpayer": {
-        // Enhanced KRA PIN validation
+        // Enhanced KRA PIN validation with user-friendly messages
         const pinValidation = validateKRAPIN(args.kra_pin);
         if (!pinValidation.valid) {
           return {
-            content: [{
-              type: "text",
-              text: `❌ ${pinValidation.error}`
-            }],
-            isError: true
-          };
-        }
-
-        // Check for existing taxpayer
-        const { data: existing } = await supabase
-          .from('taxpayers')
-          .select('id, business_name')
-          .eq('kra_pin', args.kra_pin.toUpperCase())
-          .single();
-
-        if (existing) {
-          return {
-            content: [{
-              type: "text",
-              text: `❌ Mnunuzi tayari amesajiliwa! ${existing.business_name} anatumia KRA PIN hii.`
-            }],
-            isError: true
-          };
-        }
-
-        // Auto-determine VAT registration requirement
-        const vatRequired = args.annual_turnover && args.annual_turnover >= KENYA_TAX_RATES.VAT_REGISTRATION_THRESHOLD;
-        if (vatRequired && !args.is_vat_registered) {
-          return {
-            content: [{
-              type: "text",
-              text: `⚠️ Mauzo yako ya mwaka (KES ${args.annual_turnover.toLocaleString()}) yanazidi KES 5M. Lazima ujisajili kwa VAT!`
-            }],
+            content: [
+              {
+                type: "text",
+                text: `❌ ${pinValidation.error}\n\nMfano sahihi: A123456789B\n- Herufi ya kwanza (A-Z)\n- Nambari 9 (0-9)\n- Herufi ya mwisho (A-Z)`
+              }
+            ],
             isError: true
           };
         }
@@ -1045,8 +827,6 @@ async function handleTool(name: string, args: any): Promise<any> {
           business_sector: args.business_sector,
           annual_turnover: args.annual_turnover || null,
           is_vat_registered: args.is_vat_registered,
-          compliance_score: 85, // Start with good score
-          risk_level: 'low',
           created_at: new Date().toISOString()
         };
 
@@ -1056,7 +836,20 @@ async function handleTool(name: string, args: any): Promise<any> {
           .select()
           .single();
         
-        if (error) throw error;
+        if (error) {
+          if (error.code === '23505') { // Unique constraint violation
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: `❌ KRA PIN ${args.kra_pin} tayari imejiandikisha. Tumia KRA PIN tofauti au angalia kama umesha jiandikisha.`
+                }
+              ],
+              isError: true
+            };
+          }
+          throw error;
+        }
 
         // Create initial tax obligations
         const obligations = [];
@@ -1076,6 +869,7 @@ async function handleTool(name: string, args: any): Promise<any> {
             penalties: 0,
             interest: 0,
             compliance_certificate_valid: true,
+            auto_calculated_penalties: false,
             created_at: new Date().toISOString(),
             updated_at: new Date().toISOString()
           });
@@ -1086,494 +880,958 @@ async function handleTool(name: string, args: any): Promise<any> {
         }
 
         // Log audit trail
-        await logAuditTrail('TAXPAYER_REGISTERED', data.id, null, data);
+        await logAuditTrail('TAXPAYER_REGISTERED', data.id, 'TAXPAYER', data.id, null, data);
 
         return {
-          content: [{
-            type: "text",
-            text: `✅ Umefanikiwa kusajili biashara! 🎉\n\n` +
-                  `📋 Jina la Biashara: ${data.business_name}\n` +
-                  `🆔 KRA PIN: ${data.kra_pin}\n` +
-                  `💼 Aina ya Biashara: ${data.business_type}\n` +
-                  `📊 Compliance Score: ${data.compliance_score}/100\n` +
-                  `🚨 Risk Level: ${data.risk_level}\n\n` +
-                  `Majukumu ya Ushuru: ${args.tax_obligations.join(', ')}\n\n` +
-                  `🔔 Finji itakukumbusha tarehe za kulipa ushuru!`
-          }]
+          content: [
+            {
+              type: "text",
+              text: `✅ Taxpayer registered successfully!\n\n🏢 Business: ${data.business_name}\n📄 KRA PIN: ${data.kra_pin}\n📅 Registration: ${data.registration_date}\n\n📋 Tax obligations created:\n${args.tax_obligations.map(o => `• ${o}`).join('\n')}\n\n🎯 Next steps:\n• Set up your first tax return\n• Configure payment reminders\n• Upload your business documents`
+            }
+          ]
         };
       }
 
       case "estimate_monthly_taxes": {
         const estimate: MonthlyTaxEstimate = {
-          estimated_vat: 0,
-          estimated_paye: 0,
-          estimated_wht: 0,
-          estimated_total: 0,
+          vat_estimate: 0,
+          paye_estimate: 0,
+          wht_estimate: 0,
+          total_estimate: 0,
           cash_flow_impact: 0,
           recommendations: [],
-          next_payment_dates: {}
+          confidence_level: 'medium'
         };
 
         // VAT Calculation
         if (args.is_vat_registered) {
           const netSales = args.monthly_revenue - args.monthly_expenses;
-          estimate.estimated_vat = Math.max(0, netSales * KENYA_TAX_RATES.VAT_STANDARD);
-          const nextVATDate = getKRADeadline('VAT', new Date());
-          estimate.next_payment_dates['VAT'] = nextVATDate.toISOString().split('T')[0];
+          estimate.vat_estimate = Math.max(0, netSales * KENYA_TAX_RATES.VAT_STANDARD);
         }
 
         // PAYE Calculation
-        if (args.employee_count && args.average_salary) {
-          const totalPayroll = args.employee_count * args.average_salary;
-          const averageNSSF = calculateNSSF(args.average_salary);
-          const averagePAYE = calculatePAYE(args.average_salary, averageNSSF);
-          estimate.estimated_paye = args.employee_count * averagePAYE;
+        if (args.employee_count > 0 && args.average_salary) {
+          const totalGrossPay = args.employee_count * args.average_salary;
+          const totalNSSF = args.employee_count * calculateNSSF(args.average_salary);
           
-          const nextPAYEDate = getKRADeadline('PAYE', new Date());
-          estimate.next_payment_dates['PAYE'] = nextPAYEDate.toISOString().split('T')[0];
+          // Simplified PAYE calculation per employee
+          const payePerEmployee = calculatePAYE(args.average_salary, calculateNSSF(args.average_salary));
+          estimate.paye_estimate = args.employee_count * payePerEmployee;
         }
 
-        // WHT Calculation (simplified)
-        if (args.has_withholding_payments) {
-          const estimatedWHTPayments = args.monthly_expenses * 0.2; // Assume 20% of expenses subject to WHT
-          estimate.estimated_wht = estimatedWHTPayments * 0.05; // Average 5% rate
-          
-          const nextWHTDate = getKRADeadline('WHT', new Date());
-          estimate.next_payment_dates['WHT'] = nextWHTDate.toISOString().split('T')[0];
+        // WHT Calculation
+        if (args.consultant_payments > 0) {
+          estimate.wht_estimate = args.consultant_payments * KENYA_TAX_RATES.WHT_RATES.consultancy;
         }
 
-        estimate.estimated_total = estimate.estimated_vat + estimate.estimated_paye + estimate.estimated_wht;
-        estimate.cash_flow_impact = (estimate.estimated_total / args.monthly_revenue) * 100;
+        estimate.total_estimate = estimate.vat_estimate + estimate.paye_estimate + estimate.wht_estimate;
+        estimate.cash_flow_impact = (estimate.total_estimate / args.monthly_revenue) * 100;
 
         // Generate recommendations
-        if (estimate.cash_flow_impact > 15) {
-          estimate.recommendations.push("⚠️ Ushuru unaathiri mtiririko wa fedha zaidi ya 15%. Panga vizuri!");
+        if (estimate.cash_flow_impact > 30) {
+          estimate.recommendations.push("💰 Tax burden is high (>30% of revenue). Consider tax planning strategies.");
+          estimate.confidence_level = 'high';
         }
         
-        if (!args.is_vat_registered && args.monthly_revenue * 12 > KENYA_TAX_RATES.VAT_REGISTRATION_THRESHOLD) {
-          estimate.recommendations.push("💡 Mauzo yako yanakaribia KES 5M. Jiandae kujisajili kwa VAT!");
+        if (args.is_vat_registered && estimate.vat_estimate < 0) {
+          estimate.recommendations.push("📈 You may be eligible for VAT refund this month.");
+        }
+        
+        if (args.employee_count > 5) {
+          estimate.recommendations.push("👥 Consider automated payroll system for PAYE compliance.");
         }
 
-        if (estimate.estimated_paye > 50000) {
-          estimate.recommendations.push("📊 PAYE yako ni kubwa. Fikiria pension contributions kupunguza ushuru.");
-        }
-
-        estimate.recommendations.push("💰 Weka akiba kwa ajili ya ushuru - 20% ya mapato yako.");
-        estimate.recommendations.push("📅 Tumia Finji kukumbushwa kabla ya tarehe za kulipa.");
+        estimate.recommendations.push("📅 Set aside tax money weekly to avoid cash flow issues.");
+        estimate.recommendations.push("🔔 Enable Finji reminders 5 days before tax deadlines.");
 
         return {
-          content: [{
-            type: "text",
-            text: `📊 MAKADIRIO YA USHURU WA MWEZI\n\n` +
-                  `💰 Mapato ya Mwezi: KES ${args.monthly_revenue.toLocaleString()}\n` +
-                  `💸 Matumizi ya Mwezi: KES ${args.monthly_expenses.toLocaleString()}\n\n` +
-                  `📋 USHURU UNATARAJIWA:\n` +
-                  `• VAT: KES ${estimate.estimated_vat.toLocaleString()}\n` +
-                  `• PAYE: KES ${estimate.estimated_paye.toLocaleString()}\n` +
-                  `• WHT: KES ${estimate.estimated_wht.toLocaleString()}\n` +
-                  `• JUMLA: KES ${estimate.estimated_total.toLocaleString()}\n\n` +
-                  `📈 Athari kwa Mtiririko wa Fedha: ${estimate.cash_flow_impact.toFixed(1)}%\n\n` +
-                  `🗓️ TAREHE ZA KULIPA:\n` +
-                  Object.entries(estimate.next_payment_dates)
-                    .map(([type, date]) => `• ${type}: ${date}`)
-                    .join('\n') + '\n\n' +
-                  `💡 MAPENDEKEZO:\n` +
-                  estimate.recommendations.map(r => `${r}`).join('\n')
-          }]
+          content: [
+            {
+              type: "text",
+              text: `📊 Monthly Tax Estimate\n\n💼 Business Overview:\n• Revenue: KES ${args.monthly_revenue.toLocaleString()}\n• Expenses: KES ${args.monthly_expenses.toLocaleString()}\n• Employees: ${args.employee_count}\n\n💰 Tax Estimates:\n• VAT: KES ${estimate.vat_estimate.toLocaleString()}\n• PAYE: KES ${estimate.paye_estimate.toLocaleString()}\n• WHT: KES ${estimate.wht_estimate.toLocaleString()}\n• TOTAL: KES ${estimate.total_estimate.toLocaleString()}\n\n📈 Cash Flow Impact: ${estimate.cash_flow_impact.toFixed(1)}% of revenue\n\n💡 Recommendations:\n${estimate.recommendations.map(r => `${r}`).join('\n')}\n\n🎯 Confidence Level: ${estimate.confidence_level.toUpperCase()}`
+            }
+          ]
         };
       }
 
       case "sync_payments_to_tax": {
-        // Find matching tax obligations
-        const { data: obligations } = await supabase
-          .from('tax_obligations')
+        const { data: taxpayer } = await supabase
+          .from('taxpayers')
           .select('*')
-          .eq('taxpayer_id', args.taxpayer_id)
-          .eq('status', 'pending')
-          .order('due_date', { ascending: true });
+          .eq('id', args.taxpayer_id)
+          .single();
 
-        if (!obligations || obligations.length === 0) {
+        if (!taxpayer) {
           return {
-            content: [{
-              type: "text",
-              text: `ℹ️ Hakuna madeni ya ushuru yanayosubiri malipo kwa sasa.`
-            }]
-          };
-        }
-
-        // Try to match payment to specific tax type or auto-detect
-        let matchedObligation = null;
-        
-        if (args.tax_type) {
-          matchedObligation = obligations.find(o => o.obligation_type === args.tax_type);
-        } else {
-          // Auto-detect based on amount (closest match)
-          matchedObligation = obligations.reduce((prev, curr) => 
-            Math.abs(curr.amount_due - args.amount) < Math.abs(prev.amount_due - args.amount) ? curr : prev
-          );
-        }
-
-        if (!matchedObligation) {
-          return {
-            content: [{
-              type: "text",
-              text: `❌ Hakuna deni la ushuru linalolingana na kiasi cha KES ${args.amount.toLocaleString()}`
-            }],
+            content: [
+              {
+                type: "text",
+                text: "❌ Taxpayer not found. Please check the taxpayer ID."
+              }
+            ],
             isError: true
           };
         }
 
-        // Update payment status
-        const { data: updatedObligation, error } = await supabase
+        // Get pending tax obligations
+        const { data: obligations } = await supabase
           .from('tax_obligations')
-          .update({
-            amount_paid: args.amount,
-            status: args.amount >= matchedObligation.amount_due ? 'paid' : 'pending',
-            updated_at: new Date().toISOString()
-          })
-          .eq('id', matchedObligation.id)
-          .select()
-          .single();
+          .select('*')
+          .eq('taxpayer_id', args.taxpayer_id)
+          .in('status', ['pending', 'filed'])
+          .order('due_date', { ascending: true });
 
-        if (error) throw error;
+        const matchedPayments = [];
+        const unmatchedPayments = [];
 
-        // Log audit trail
-        await logAuditTrail(
-          'PAYMENT_SYNCED', 
-          args.taxpayer_id, 
-          matchedObligation, 
-          updatedObligation
-        );
+        // Simple matching algorithm - can be enhanced with ML
+        for (const payment of args.payment_data) {
+          let matched = false;
+          
+          // Look for KRA-related keywords in description
+          const kraKeywords = ['kra', 'tax', 'vat', 'paye', 'wht', 'kenya revenue'];
+          const description = payment.description.toLowerCase();
+          
+          if (kraKeywords.some(keyword => description.includes(keyword))) {
+            // Try to match with pending obligations by amount
+            const matchingObligation = obligations?.find(o => 
+              Math.abs(o.amount_due - payment.amount) < 100 // Allow KES 100 variance
+            );
+            
+            if (matchingObligation && args.auto_match) {
+              // Update obligation as paid
+              await supabase
+                .from('tax_obligations')
+                .update({
+                  amount_paid: payment.amount,
+                  status: 'paid',
+                  updated_at: new Date().toISOString()
+                })
+                .eq('id', matchingObligation.id);
+              
+              matchedPayments.push({
+                payment: payment,
+                obligation: matchingObligation,
+                match_confidence: 'high'
+              });
+              matched = true;
+            }
+          }
+          
+          if (!matched) {
+            unmatchedPayments.push(payment);
+          }
+        }
 
-        const isFullyPaid = args.amount >= matchedObligation.amount_due;
-        const remainingBalance = Math.max(0, matchedObligation.amount_due - args.amount);
+        // Log audit trail for matched payments
+        for (const match of matchedPayments) {
+          await logAuditTrail(
+            'PAYMENT_SYNCED', 
+            args.taxpayer_id, 
+            'OBLIGATION', 
+            match.obligation.id,
+            { amount_paid: 0 },
+            { amount_paid: match.payment.amount }
+          );
+        }
 
         return {
-          content: [{
-            type: "text",
-            text: `✅ MALIPO YAMEHIFADHIWA! 💰\n\n` +
-                  `📋 Aina ya Ushuru: ${matchedObligation.obligation_type}\n` +
-                  `💳 Njia ya Malipo: ${args.payment_method.toUpperCase()}\n` +
-                  `🔢 Reference: ${args.payment_reference}\n` +
-                  `💰 Kiasi: KES ${args.amount.toLocaleString()}\n` +
-                  `📅 Tarehe: ${args.payment_date}\n\n` +
-                  `${isFullyPaid ? 
-                    '🎉 Umelipa kikamilifu! Hongera!' : 
-                    `⚠️ Baki: KES ${remainingBalance.toLocaleString()}`
-                  }\n\n` +
-                  `${isFullyPaid ? 
-                    '📜 Unastahili Certificate of Tax Compliance!' : 
-                    '💡 Maliza malipo ya deni hili kupata Certificate.'
-                  }`
-          }]
+          content: [
+            {
+              type: "text",
+              text: `🔄 Payment Sync Results\n\n✅ Matched Payments: ${matchedPayments.length}\n${matchedPayments.map(m => `• KES ${m.payment.amount.toLocaleString()} → ${m.obligation.obligation_type} (${m.payment.date})`).join('\n')}\n\n❓ Unmatched Payments: ${unmatchedPayments.length}\n${unmatchedPayments.map(p => `• KES ${p.amount.toLocaleString()} - ${p.description} (${p.date})`).join('\n')}\n\n💡 Tip: Use keywords like 'KRA', 'VAT', 'PAYE' in M-Pesa descriptions for better matching.`
+            }
+          ]
         };
       }
 
       case "get_compliance_score": {
-        const complianceScore = await calculateComplianceScore(args.taxpayer_id);
-        
         const { data: taxpayer } = await supabase
           .from('taxpayers')
-          .select('business_name, kra_pin')
+          .select('*')
           .eq('id', args.taxpayer_id)
           .single();
 
-        // Update taxpayer record with new compliance score
-        await supabase
-          .from('taxpayers')
-          .update({
-            compliance_score: complianceScore.score,
-            risk_level: complianceScore.risk_level
-          })
-          .eq('id', args.taxpayer_id);
+        if (!taxpayer) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: "❌ Taxpayer not found."
+              }
+            ],
+            isError: true
+          };
+        }
 
-        let scoreEmoji = '🔴';
-        if (complianceScore.score >= 75) scoreEmoji = '🟢';
-        else if (complianceScore.score >= 50) scoreEmoji = '🟡';
+        // Get existing score if not recalculating
+        let complianceScore: ComplianceScore | null = null;
+        
+        if (!args.recalculate) {
+          const { data: existingScore } = await supabase
+            .from('compliance_scores')
+            .select('*')
+            .eq('taxpayer_id', args.taxpayer_id)
+            .order('created_at', { ascending: false })
+            .limit(1)
+            .single();
+            
+          if (existingScore && daysBetween(existingScore.last_calculated, new Date().toISOString()) < 7) {
+            complianceScore = existingScore;
+          }
+        }
+
+        // Recalculate if needed
+        if (!complianceScore || args.recalculate) {
+          const { data: obligations } = await supabase
+            .from('tax_obligations')
+            .select('*')
+            .eq('taxpayer_id', args.taxpayer_id);
+
+          const { data: returns } = await supabase
+            .from('vat_returns')
+            .select('*')
+            .eq('taxpayer_id', args.taxpayer_id);
+
+          complianceScore = calculateComplianceScore(taxpayer, obligations || [], returns || []);
+          
+          // Save to database
+          await supabase
+            .from('compliance_scores')
+            .insert([complianceScore]);
+        }
+
+        const riskEmoji = {
+          'low': '🟢',
+          'medium': '🟡', 
+          'high': '🟠',
+          'critical': '🔴'
+        };
 
         return {
-          content: [{
-            type: "text",
-            text: `${scoreEmoji} COMPLIANCE SCORE REPORT\n\n` +
-                  `🏢 Biashara: ${taxpayer?.business_name}\n` +
-                  `🆔 KRA PIN: ${taxpayer?.kra_pin}\n\n` +
-                  `📊 OVERALL SCORE: ${complianceScore.score}/100\n` +
-                  `🚨 Risk Level: ${complianceScore.risk_level.toUpperCase()}\n` +
-                  `📜 Certificate Eligible: ${complianceScore.certificate_eligibility ? 'YES ✅' : 'NO ❌'}\n\n` +
-                  `📈 DETAILED BREAKDOWN:\n` +
-                  `• Timely Filing: ${complianceScore.factors.timely_filing}/100\n` +
-                  `• Payment History: ${complianceScore.factors.payment_history}/100\n` +
-                  `• Penalty Record: ${complianceScore.factors.penalty_frequency}/100\n` +
-                  `• Documentation: ${complianceScore.factors.documentation_quality}/100\n\n` +
-                  `💡 IMPROVEMENT TIPS:\n` +
-                  complianceScore.improvement_tips.map(tip => `• ${tip}`).join('\n') +
-                  `\n\n🎯 NEXT STEPS:\n` +
-                  `${complianceScore.certificate_eligibility ? 
-                    '• Apply for Tax Compliance Certificate\n• Maintain current good standing' :
-                    '• Clear all overdue obligations\n• Set up payment reminders\n• Contact KRA if needed'
-                  }`
-          }]
+          content: [
+            {
+              type: "text",
+              text: `📊 Compliance Score Report\n\n🏢 ${taxpayer.business_name}\n📄 KRA PIN: ${taxpayer.kra_pin}\n\n🎯 Overall Score: ${complianceScore.score}/100\n${riskEmoji[complianceScore.risk_level]} Risk Level: ${complianceScore.risk_level.toUpperCase()}\n\n📈 Score Breakdown:\n• Timely Filing: ${complianceScore.factors.timely_filing.toFixed(1)}%\n• Payment History: ${complianceScore.factors.payment_history.toFixed(1)}%\n• Accuracy: ${complianceScore.factors.accuracy.toFixed(1)}%\n• Completeness: ${complianceScore.factors.completeness.toFixed(1)}%\n\n📜 Compliance Certificate: ${complianceScore.certificate_eligibility ? '✅ ELIGIBLE' : '❌ NOT ELIGIBLE'}\n\n💡 Improvement Tips:\n${complianceScore.improvement_tips.map(tip => `• ${tip}`).join('\n')}\n\n📅 Last Updated: ${new Date(complianceScore.last_calculated).toLocaleDateString()}`
+            }
+          ]
+        };
+      }
+
+      case "calculate_auto_penalties": {
+        const currentDate = new Date().toISOString().split('T')[0];
+        
+        let query = supabase
+          .from('tax_obligations')
+          .select('*')
+          .eq('taxpayer_id', args.taxpayer_id)
+          .lt('due_date', currentDate)
+          .neq('status', 'paid');
+
+        if (args.obligation_id) {
+          query = query.eq('id', args.obligation_id);
+        }
+
+        const { data: overdueObligations, error } = await query;
+        
+        if (error) throw error;
+
+        const penaltyUpdates = [];
+
+        for (const obligation of overdueObligations || []) {
+          const { penalties, interest } = calculatePenalties(
+            obligation.due_date, 
+            currentDate, 
+            obligation.amount_due
+          );
+
+          const updatedObligation = {
+            ...obligation,
+            penalties,
+            interest,
+            auto_calculated_penalties: true,
+            updated_at: new Date().toISOString()
+          };
+
+          penaltyUpdates.push(updatedObligation);
+
+          if (args.apply_penalties) {
+            await supabase
+              .from('tax_obligations')
+              .update({
+                penalties,
+                interest,
+                auto_calculated_penalties: true,
+                updated_at: new Date().toISOString()
+              })
+              .eq('id', obligation.id);
+
+            // Log audit trail
+            await logAuditTrail(
+              'PENALTIES_CALCULATED',
+              args.taxpayer_id,
+              'OBLIGATION',
+              obligation.id,
+              { penalties: obligation.penalties, interest: obligation.interest },
+              { penalties, interest }
+            );
+          }
+        }
+
+        const totalPenalties = penaltyUpdates.reduce((sum, o) => sum + o.penalties, 0);
+        const totalInterest = penaltyUpdates.reduce((sum, o) => sum + o.interest, 0);
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: `⚠️ Penalty Calculation Results\n\n📊 Overdue Obligations: ${penaltyUpdates.length}\n💰 Total Penalties: KES ${totalPenalties.toLocaleString()}\n📈 Total Interest: KES ${totalInterest.toLocaleString()}\n💸 Total Additional Amount: KES ${(totalPenalties + totalInterest).toLocaleString()}\n\n${args.apply_penalties ? '✅ Penalties have been applied to your obligations.' : '⚠️ Penalties calculated but not applied. Set apply_penalties=true to apply them.'}\n\n📋 Breakdown:\n${penaltyUpdates.map(o => `• ${o.obligation_type}: KES ${o.penalties.toLocaleString()} penalty + KES ${o.interest.toLocaleString()} interest`).join('\n')}\n\n🎯 Action Required: Pay overdue amounts immediately to avoid further penalties.`
+            }
+          ]
         };
       }
 
       case "queue_kra_submission": {
         // Get the return data
         let returnData = null;
-        const tableName = args.return_type.toLowerCase() + '_returns';
+        let returnTable = '';
         
-        const { data, error: fetchError } = await supabase
-          .from(tableName)
+        switch (args.return_type) {
+          case 'VAT':
+            returnTable = 'vat_returns';
+            break;
+          case 'PAYE':
+            returnTable = 'paye_returns';
+            break;
+          case 'WHT':
+            returnTable = 'withholding_tax';
+            break;
+        }
+
+        const { data: returnDataResult } = await supabase
+          .from(returnTable)
           .select('*')
           .eq('id', args.return_id)
           .single();
 
-        if (fetchError || !data) {
+        if (!returnDataResult) {
           return {
-            content: [{
-              type: "text",
-              text: `❌ Return haijaweza kupatikana. Hakikisha ID ni sahihi.`
-            }],
+            content: [
+              {
+                type: "text",
+                text: `❌ ${args.return_type} return not found with ID: ${args.return_id}`
+              }
+            ],
             isError: true
           };
         }
 
-        const submissionQueue: KRASubmissionQueue = {
+        const queueItem: KRASubmissionQueue = {
           id: generateId(),
           taxpayer_id: args.taxpayer_id,
           return_type: args.return_type,
-          data: data,
-          status: 'pending',
+          return_data: returnDataResult,
+          submission_status: 'pending',
           retry_count: 0,
-          scheduled_submission: args.scheduled_date || new Date().toISOString(),
+          last_attempt: new Date().toISOString(),
           created_at: new Date().toISOString(),
           updated_at: new Date().toISOString()
         };
 
-        const { data: queuedSubmission, error } = await supabase
+        const { data, error } = await supabase
           .from('kra_submission_queue')
-          .insert([submissionQueue])
+          .insert([queueItem])
           .select()
           .single();
 
         if (error) throw error;
 
-        // Update the return with queue reference
-        await supabase
-          .from(tableName)
-          .update({ submission_queue_id: queuedSubmission.id })
-          .eq('id', args.return_id);
-
         return {
-          content: [{
-            type: "text",
-            text: `📋 RETURN IMEPANGWA KWA KRA! ⏰\n\n` +
-                  `📊 Aina: ${args.return_type}\n` +
-                  `🆔 Queue ID: ${queuedSubmission.id}\n` +
-                  `⏰ Itakupatikana: ${submissionQueue.scheduled_submission}\n` +
-                  `📱 Status: Inasubiri\n\n` +
-                  `✅ Finji itakujulisha iwapo return imepatikana kikamilifu!\n` +
-                  `🔄 Kama hakuna internet, return itasubiriwa na kupatiwa baadaye.`
-          }]
-        };
-      }
-
-      case "check_vat_registration_requirement": {
-        const threshold = KENYA_TAX_RATES.VAT_REGISTRATION_THRESHOLD;
-        const isRequired = args.annual_turnover >= threshold;
-        const percentageOfThreshold = (args.annual_turnover / threshold) * 100;
-        
-        let projectedTurnover = args.annual_turnover;
-        if (args.projected_growth) {
-          projectedTurnover = args.annual_turnover * (1 + args.projected_growth / 100);
-        }
-        
-        const willRequireNext = projectedTurnover >= threshold;
-
-        return {
-          content: [{
-            type: "text",
-            text: `📊 VAT REGISTRATION CHECK\n\n` +
-                  `💰 Current Turnover: KES ${args.annual_turnover.toLocaleString()}\n` +
-                  `🎯 VAT Threshold: KES ${threshold.toLocaleString()}\n` +
-                  `📈 You're at: ${percentageOfThreshold.toFixed(1)}% of threshold\n\n` +
-                  `${isRequired ? 
-                    '🚨 VAT REGISTRATION REQUIRED!\n' +
-                    '• You MUST register for VAT immediately\n' +
-                    '• Contact KRA or visit iTax portal\n' +
-                    '• Start charging 16% VAT on sales\n' +
-                    '• File monthly VAT returns' :
-                    `✅ VAT Registration: Not Required\n` +
-                    `• You're ${((threshold - args.annual_turnover) / 1000000).toFixed(1)}M below threshold\n` +
-                    `• Monitor your growth closely`
-                  }\n\n` +
-                  `${args.projected_growth ? 
-                    `🔮 PROJECTION (${args.projected_growth}% growth):\n` +
-                    `Next Year: KES ${projectedTurnover.toLocaleString()}\n` +
-                    `${willRequireNext && !isRequired ? 
-                      '⚠️ You will need VAT registration next year!' : 
-                      willRequireNext ? 
-                        '✅ Will continue requiring VAT' : 
-                        '✅ Will remain below threshold'
-                    }` : ''
-                  }\n\n` +
-                  `💡 RECOMMENDATIONS:\n` +
-                  `${isRequired ? 
-                    '• Register for VAT within 30 days\n• Update all invoices to include VAT\n• Set up VAT tracking in Finji' :
-                    '• Track monthly sales to monitor threshold\n• Plan for VAT registration if growing\n• Consider voluntary registration benefits'
-                  }`
-          }]
-        };
-      }
-
-      case "generate_tax_calendar": {
-        const year = args.year;
-        const reminderDays = args.reminder_days || 7;
-        
-        // Get taxpayer obligations
-        const { data: taxpayer } = await supabase
-          .from('taxpayers')
-          .select('tax_obligations, business_name')
-          .eq('id', args.taxpayer_id)
-          .single();
-
-        if (!taxpayer) {
-          return {
-            content: [{
+          content: [
+            {
               type: "text",
-              text: `❌ Mnunuzi hajapatikana.`
-            }],
+              text: `📤 KRA Submission Queued\n\n📋 Submission Details:\n• Return Type: ${args.return_type}\n• Return ID: ${args.return_id}\n• Queue Position: ${data.id}\n• Priority: ${args.priority || 'normal'}\n\n⏱️ Status: PENDING\n\n🔄 Your return will be submitted to KRA automatically. You'll receive a notification once completed.\n\n💡 Tip: Keep your internet connection stable for successful submission.`
+            }
+          ]
+        };
+      }
+
+      case "get_upcoming_deadlines": {
+        const currentDate = new Date();
+        const futureDate = new Date(currentDate);
+        futureDate.setDate(currentDate.getDate() + args.days_ahead);
+
+        const { data: obligations } = await supabase
+          .from('tax_obligations')
+          .select('*')
+          .eq('taxpayer_id', args.taxpayer_id)
+          .gte('due_date', currentDate.toISOString().split('T')[0])
+          .lte('due_date', futureDate.toISOString().split('T')[0])
+          .order('due_date', { ascending: true });
+
+        const deadlines = [];
+        
+        for (const obligation of obligations || []) {
+          const daysUntilDue = daysBetween(currentDate.toISOString(), obligation.due_date);
+          let urgency = '🟢';
+          
+          if (daysUntilDue <= 3) urgency = '🔴';
+          else if (daysUntilDue <= 7) urgency = '🟡';
+          
+          let estimatedAmount = obligation.amount_due;
+          
+          if (args.include_estimates && estimatedAmount === 0) {
+            // Simple estimation based on historical data or business size
+            switch (obligation.obligation_type) {
+              case 'VAT':
+                estimatedAmount = 50000; // Placeholder estimation
+                break;
+              case 'PAYE':
+                estimatedAmount = 30000; // Placeholder estimation
+                break;
+              case 'WHT':
+                estimatedAmount = 5000; // Placeholder estimation
+                break;
+            }
+          }
+
+          deadlines.push({
+            obligation,
+            days_until_due: daysUntilDue,
+            urgency,
+            estimated_amount: estimatedAmount
+          });
+        }
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: `📅 Upcoming Tax Deadlines (${args.days_ahead} days)\n\n${deadlines.length === 0 ? '✅ No upcoming deadlines!' : deadlines.map(d => `${d.urgency} ${d.obligation.obligation_type}\n• Due: ${d.obligation.due_date} (${d.days_until_due} days)\n• Estimated: KES ${d.estimated_amount.toLocaleString()}\n• Status: ${d.obligation.status.toUpperCase()}`).join('\n\n')}\n\n🎯 Total Estimated: KES ${deadlines.reduce((sum, d) => sum + d.estimated_amount, 0).toLocaleString()}\n\n💡 Reminders:\n• File returns 2-3 days before deadline\n• Keep receipts and invoices ready\n• Set up M-Pesa auto-pay for peace of mind`
+            }
+          ]
+        };
+      }
+
+      case "file_paye_return": {
+        const dueDate = getKRADeadline('PAYE', new Date(args.period_year, args.period_month - 1));
+        const currentDate = new Date();
+
+        const employees: EmployeeP9[] = args.employees.map((emp: any) => {
+          const grossPay = emp.basic_salary + emp.allowances;
+          const nssfDeduction = calculateNSSF(grossPay);
+          const nhifDeduction = calculateNHIF(grossPay);
+          const housingLevy = calculateHousingLevy(grossPay);
+          const payeTax = calculatePAYE(grossPay, nssfDeduction, emp.pension_contribution || 0, emp.insurance_relief || 0);
+          const netPay = grossPay - nssfDeduction - nhifDeduction - payeTax - housingLevy;
+
+          // Validate employee KRA PIN
+          const pinValidation = validateKRAPIN(emp.employee_kra_pin);
+          if (!pinValidation.valid) {
+            throw new Error(`Employee ${emp.employee_name}: ${pinValidation.error}`);
+          }
+
+          return {
+            employee_kra_pin: emp.employee_kra_pin.toUpperCase(),
+            employee_name: emp.employee_name,
+            basic_salary: emp.basic_salary,
+            allowances: emp.allowances,
+            gross_pay: grossPay,
+            nssf_deduction: nssfDeduction,
+            pension_contribution: emp.pension_contribution || 0,
+            owner_occupier_interest: 0,
+            insurance_relief: emp.insurance_relief || 0,
+            taxable_income: Math.max(0, grossPay - nssfDeduction - (emp.pension_contribution || 0) - KENYA_TAX_RATES.PAYE_PERSONAL_RELIEF - Math.min(emp.insurance_relief || 0, KENYA_TAX_RATES.INSURANCE_RELIEF_MAX)),
+            paye_tax: payeTax,
+            nhif_deduction: nhifDeduction,
+            housing_levy: housingLevy,
+            net_pay: netPay
+          };
+        });
+
+        const payeReturn: PAYEReturn = {
+          id: generateId(),
+          taxpayer_id: args.taxpayer_id,
+          period_month: args.period_month,
+          period_year: args.period_year,
+          total_employees: employees.length,
+          total_gross_pay: employees.reduce((sum, emp) => sum + emp.gross_pay, 0),
+          total_paye_deducted: employees.reduce((sum, emp) => sum + emp.paye_tax, 0),
+          total_nhif_deducted: employees.reduce((sum, emp) => sum + emp.nhif_deduction, 0),
+          total_nssf_deducted: employees.reduce((sum, emp) => sum + emp.nssf_deduction, 0),
+          total_housing_levy: employees.reduce((sum, emp) => sum + emp.housing_levy, 0),
+          total_affordable_housing_levy: employees.reduce((sum, emp) => sum + emp.housing_levy, 0),
+          net_paye_due: employees.reduce((sum, emp) => sum + emp.paye_tax, 0),
+          penalties: 0,
+          interest: 0,
+          total_due: employees.reduce((sum, emp) => sum + emp.paye_tax, 0),
+          filing_date: new Date().toISOString(),
+          due_date: dueDate.toISOString().split('T')[0],
+          status: 'filed',
+          p9_forms: employees,
+          auto_penalties_calculated: false,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        };
+
+        // Auto-calculate penalties if late filing
+        if (args.auto_calculate_penalties && currentDate > dueDate) {
+          const penaltyCalc = calculatePenalties(
+            payeReturn.due_date, 
+            currentDate.toISOString().split('T')[0], 
+            payeReturn.net_paye_due
+          );
+          payeReturn.penalties = penaltyCalc.penalties;
+          payeReturn.interest = penaltyCalc.interest;
+          payeReturn.auto_penalties_calculated = true;
+          payeReturn.total_due = payeReturn.net_paye_due + payeReturn.penalties + payeReturn.interest;
+        }
+
+        const { data, error } = await supabase
+          .from('paye_returns')
+          .insert([payeReturn])
+          .select()
+          .single();
+        
+        if (error) throw error;
+
+        // Log audit trail
+        await logAuditTrail('PAYE_RETURN_FILED', args.taxpayer_id, 'PAYE_RETURN', data.id, null, data);
+
+        const isLate = currentDate > dueDate;
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: `✅ PAYE Return Filed Successfully!\n\n📋 Return Details:\n• Period: ${args.period_month}/${args.period_year}\n• Total Employees: ${payeReturn.total_employees}\n• Total Gross Pay: KES ${payeReturn.total_gross_pay.toLocaleString()}\n\n💰 Statutory Deductions:\n• PAYE Tax: KES ${payeReturn.total_paye_deducted.toLocaleString()}\n• NSSF: KES ${payeReturn.total_nssf_deducted.toLocaleString()}\n• NHIF: KES ${payeReturn.total_nhif_deducted.toLocaleString()}\n• Housing Levy: KES ${payeReturn.total_housing_levy.toLocaleString()}\n\n💸 NET PAYE DUE: KES ${payeReturn.net_paye_due.toLocaleString()}\n${payeReturn.penalties > 0 ? `⚠️ Late Filing Penalty: KES ${payeReturn.penalties.toLocaleString()}` : ''}\n${payeReturn.interest > 0 ? `📈 Interest: KES ${payeReturn.interest.toLocaleString()}` : ''}\n\n💰 TOTAL AMOUNT DUE: KES ${payeReturn.total_due.toLocaleString()}\n\n📅 Filed: ${new Date().toLocaleDateString()}\n${isLate ? '⏰ Status: LATE FILING' : '✅ Status: ON TIME'}\n\n👥 Employee Breakdown:\n${employees.slice(0, 3).map(emp => `• ${emp.employee_name}: KES ${emp.paye_tax.toLocaleString()} PAYE`).join('\n')}${employees.length > 3 ? `\n• ... and ${employees.length - 3} more employees` : ''}\n\n🎯 Next Steps:\n• Pay by ${payeReturn.due_date}\n• Issue P9 forms to employees\n• Keep payroll records for audit`
+            }
+          ]
+        };
+      }
+
+      case "file_withholding_tax": {
+        // Validate supplier KRA PIN
+        const pinValidation = validateKRAPIN(args.supplier_pin);
+        if (!pinValidation.valid) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `❌ Supplier KRA PIN: ${pinValidation.error}`
+              }
+            ],
             isError: true
           };
         }
 
-        const calendar = [];
-        const months = [
-          'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-          'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
-        ];
+        const whtRate = KENYA_TAX_RATES.WHT_RATES[args.service_type as keyof typeof KENYA_TAX_RATES.WHT_RATES] || 0.05;
+        const whtAmount = args.invoice_amount * whtRate;
 
-        // Generate calendar for each obligation type
-        for (const obligation of taxpayer.tax_obligations) {
-          for (let month = 1; month <= 12; month++) {
-            const dueDate = new Date(year, month, 20); // Most taxes due on 20th
-            const adjustedDue = adjustForWeekends(dueDate);
-            const reminderDate = new Date(adjustedDue);
-            reminderDate.setDate(reminderDate.getDate() - reminderDays);
+        const withholdingTax: WithholdingTax = {
+          id: generateId(),
+          taxpayer_id: args.taxpayer_id,
+          period_month: args.period_month,
+          period_year: args.period_year,
+          supplier_pin: args.supplier_pin.toUpperCase(),
+          supplier_name: args.supplier_name,
+          invoice_amount: args.invoice_amount,
+          wht_rate: whtRate,
+          wht_amount: whtAmount,
+          service_type: args.service_type,
+          payment_date: args.payment_date,
+          filing_date: new Date().toISOString(),
+          status: 'filed',
+          created_at: new Date().toISOString()
+        };
 
-            calendar.push({
-              month: months[month - 1],
-              obligation: obligation,
-              due_date: adjustedDue.toISOString().split('T')[0],
-              reminder_date: reminderDate.toISOString().split('T')[0],
-              period: `${months[month - 1]} ${year}`
-            });
-          }
-        }
+        const { data, error } = await supabase
+          .from('withholding_tax')
+          .insert([withholdingTax])
+          .select()
+          .single();
+        
+        if (error) throw error;
 
-        // Group by month
-        const groupedCalendar = calendar.reduce((acc, item) => {
-          const month = item.month;
-          if (!acc[month]) acc[month] = [];
-          acc[month].push(item);
-          return acc;
-        }, {} as any);
-
-        let calendarText = `📅 KALENDA YA USHURU ${year}\n`;
-        calendarText += `🏢 ${taxpayer.business_name}\n\n`;
-
-        for (const [month, items] of Object.entries(groupedCalendar)) {
-          calendarText += `📅 ${month.toUpperCase()} ${year}\n`;
-          for (const item of items as any[]) {
-            calendarText += `  • ${item.obligation}: ${item.due_date}\n`;
-            calendarText += `    📢 Reminder: ${item.reminder_date}\n`;
-          }
-          calendarText += '\n';
-        }
-
-        calendarText += `🔔 VIKUMBUSHO:\n`;
-        calendarText += `• Finji itakutumia WhatsApp ${reminderDays} siku kabla\n`;
-        calendarText += `• Weka akiba 20% ya mapato kwa ushuru\n`;
-        calendarText += `• Tunza rekodi zote za biashara\n`;
-        calendarText += `• Lipa mapema kuepuka faini`;
+        // Log audit trail
+        await logAuditTrail('WHT_FILED', args.taxpayer_id, 'WHT', data.id, null, data);
 
         return {
-          content: [{
-            type: "text",
-            text: calendarText
-          }]
+          content: [
+            {
+              type: "text",
+              text: `✅ Withholding Tax Filed Successfully!\n\n📋 WHT Details:\n• Supplier: ${args.supplier_name}\n• KRA PIN: ${args.supplier_pin.toUpperCase()}\n• Service Type: ${args.service_type.toUpperCase()}\n• Invoice Amount: KES ${args.invoice_amount.toLocaleString()}\n• WHT Rate: ${(whtRate * 100).toFixed(1)}%\n\n💰 WHT AMOUNT: KES ${whtAmount.toLocaleString()}\n💸 Net Payment to Supplier: KES ${(args.invoice_amount - whtAmount).toLocaleString()}\n\n📅 Payment Date: ${args.payment_date}\n📅 Filed: ${new Date().toLocaleDateString()}\n\n🎯 Next Steps:\n• Pay WHT to KRA by 20th of next month\n• Issue WHT certificate to supplier\n• Keep invoice and payment proof`
+            }
+          ]
         };
       }
 
-      case "simulate_tax_scenarios": {
-        const baseRevenue = args.base_revenue;
-        const baseExpenses = baseRevenue * 0.6; // Assume 60% expense ratio
-        const baseEmployees = 2; // Default assumption
-        const results = [];
+      case "get_tax_obligations": {
+        let query = supabase
+          .from('tax_obligations')
+          .select('*')
+          .eq('taxpayer_id', args.taxpayer_id)
+          .order('due_date', { ascending: true });
 
-        for (const scenario of args.scenarios) {
-          const newRevenue = baseRevenue * (1 + scenario.revenue_change / 100);
-          const newExpenses = baseExpenses * (1 + scenario.expense_change / 100);
-          const newEmployees = baseEmployees + (scenario.employee_change || 0);
-
-          // Calculate taxes for this scenario
-          const vatImpact = (newRevenue - newExpenses) * KENYA_TAX_RATES.VAT_STANDARD;
-          const payeImpact = newEmployees * calculatePAYE(50000, calculateNSSF(50000)); // Assume 50k salary
-          const totalTax = vatImpact + payeImpact;
-          const netProfit = newRevenue - newExpenses - totalTax;
-          const taxRate = (totalTax / newRevenue) * 100;
-
-          results.push({
-            scenario_name: scenario.name,
-            revenue: newRevenue,
-            expenses: newExpenses,
-            employees: newEmployees,
-            vat_liability: vatImpact,
-            paye_liability: payeImpact,
-            total_tax: totalTax,
-            net_profit: netProfit,
-            effective_tax_rate: taxRate
-          });
+        if (args.status) {
+          query = query.eq('status', args.status);
         }
 
-        let resultText = `📊 SIMULATION YA USHURU\n\n`;
-        resultText += `💰 Base Revenue: KES ${baseRevenue.toLocaleString()}\n\n`;
+        const { data, error } = await query;
+        if (error) throw error;
 
-        for (const result of results) {
-          resultText += `🎬 SCENARIO: ${result.scenario_name}\n`;
-          resultText += `  💰 Revenue: KES ${result.revenue.toLocaleString()}\n`;
-          resultText += `  💸 Expenses: KES ${result.expenses.toLocaleString()}\n`;
-          resultText += `  👥 Employees: ${result.employees}\n`;
-          resultText += `  📊 Total Tax: KES ${result.total_tax.toLocaleString()}\n`;
-          resultText += `  💵 Net Profit: KES ${result.net_profit.toLocaleString()}\n`;
-          resultText += `  📈 Tax Rate: ${result.effective_tax_rate.toFixed(1)}%\n\n`;
-        }
-
-        // Find best and worst scenarios
-        const bestScenario = results.reduce((prev, current) => 
-          current.net_profit > prev.net_profit ? current : prev
-        );
-        const worstScenario = results.reduce((prev, current) => 
-          current.net_profit < prev.net_profit ? current : prev
-        );
-
-        resultText += `🏆 BEST SCENARIO: ${bestScenario.scenario_name}\n`;
-        resultText += `   Profit: KES ${bestScenario.net_profit.toLocaleString()}\n\n`;
-        resultText += `⚠️ WORST SCENARIO: ${worstScenario.scenario_name}\n`;
-        resultText += `   Profit: KES ${worstScenario.net_profit.toLocaleString()}\n\n`;
-        resultText += `💡 Plan wisely and save for tax obligations!`;
-
-        return {
-          content: [{
-            type: "text",
-            text: resultText
-          }]
-        };
-      }
-
-      case "file_vat_return": {
-        // Enhanced VAT return filing with penalty calculation
         const currentDate = new Date();
+        const groupedObligations = {
+          overdue: data?.filter(o => new Date(o.due_date) < currentDate && o.status !== 'paid') || [],
+          upcoming: data?.filter(o => {
+            const dueDate = new Date(o.due_date);
+            const inTwoWeeks = new Date(currentDate);
+            inTwoWeeks.setDate(currentDate.getDate() + 14);
+            return dueDate >= currentDate && dueDate <= inTwoWeeks && o.status !== 'paid';
+          }) || [],
+          future: data?.filter(o => {
+            const dueDate = new Date(o.due_date);
+            const inTwoWeeks = new Date(currentDate);
+            inTwoWeeks.setDate(currentDate.getDate() + 14);
+            return dueDate > inTwoWeeks && o.status !== 'paid';
+          }) || [],
+          completed: data?.filter(o => o.status === 'paid') || []
+        };
+
+        const totalOutstanding = groupedObligations.overdue.reduce((sum, o) => sum + (o.amount_due - o.amount_paid), 0) +
+                               groupedObligations.upcoming.reduce((sum, o) => sum + (o.amount_due - o.amount_paid), 0);
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: `📊 Tax Obligations Summary\n\n🔴 OVERDUE (${groupedObligations.overdue.length}):\n${groupedObligations.overdue.length === 0 ? '✅ None' : groupedObligations.overdue.map(o => `• ${o.obligation_type}: KES ${(o.amount_due - o.amount_paid).toLocaleString()} (Due: ${o.due_date})`).join('\n')}\n\n🟡 UPCOMING (${groupedObligations.upcoming.length}):\n${groupedObligations.upcoming.length === 0 ? '✅ None in next 2 weeks' : groupedObligations.upcoming.map(o => `• ${o.obligation_type}: KES ${(o.amount_due - o.amount_paid).toLocaleString()} (Due: ${o.due_date})`).join('\n')}\n\n🟢 COMPLETED (${groupedObligations.completed.length}):\n${groupedObligations.completed.slice(0, 3).map(o => `• ${o.obligation_type}: KES ${o.amount_paid.toLocaleString()} ✅`).join('\n')}${groupedObligations.completed.length > 3 ? `\n• ... and ${groupedObligations.completed.length - 3} more` : ''}\n\n💰 TOTAL OUTSTANDING: KES ${totalOutstanding.toLocaleString()}\n\n${groupedObligations.overdue.length > 0 ? '⚠️ URGENT: Pay overdue amounts immediately to avoid penalties!' : '✅ No overdue obligations - great job!'}`
+            }
+          ]
+        };
+      }
+
+      case "calculate_tax_liability": {
+        let result = {};
+
+        switch (args.tax_type) {
+          case 'PAYE': {
+            const grossPay = args.amount;
+            const nssfDeduction = calculateNSSF(grossPay);
+            const nhifDeduction = calculateNHIF(grossPay);
+            const housingLevy = calculateHousingLevy(grossPay);
+            const payeTax = calculatePAYE(
+              grossPay, 
+              nssfDeduction, 
+              args.additional_params?.pension_contribution || 0,
+              args.additional_params?.insurance_relief || 0
+            );
+
+            result = {
+              gross_pay: grossPay,
+              nssf_deduction: nssfDeduction,
+              nhif_deduction: nhifDeduction,
+              housing_levy: housingLevy,
+              paye_tax: payeTax,
+              net_pay: grossPay - nssfDeduction - nhifDeduction - housingLevy - payeTax,
+              total_statutory_deductions: nssfDeduction + nhifDeduction + housingLevy + payeTax,
+              take_home_percentage: ((grossPay - nssfDeduction - nhifDeduction - housingLevy - payeTax) / grossPay * 100).toFixed(1)
+            };
+            break;
+          }
+          case 'VAT': {
+            const isInclusive = args.additional_params?.inclusive || false;
+            let vatAmount, netAmount, totalAmount;
+            
+            if (isInclusive) {
+              // Amount includes VAT
+              totalAmount = args.amount;
+              vatAmount = totalAmount - (totalAmount / (1 + KENYA_TAX_RATES.VAT_STANDARD));
+              netAmount = totalAmount - vatAmount;
+            } else {
+              // Amount excludes VAT
+              netAmount = args.amount;
+              vatAmount = netAmount * KENYA_TAX_RATES.VAT_STANDARD;
+              totalAmount = netAmount + vatAmount;
+            }
+            
+            result = {
+              net_amount: netAmount,
+              vat_amount: vatAmount,
+              total_amount: totalAmount,
+              vat_rate: KENYA_TAX_RATES.VAT_STANDARD,
+              calculation_type: isInclusive ? 'VAT Inclusive' : 'VAT Exclusive'
+            };
+            break;
+          }
+          case 'WHT': {
+            const serviceType = args.additional_params?.service_type || 'consultancy';
+            const whtRate = KENYA_TAX_RATES.WHT_RATES[serviceType as keyof typeof KENYA_TAX_RATES.WHT_RATES] || 0.05;
+            result = {
+              invoice_amount: args.amount,
+              wht_rate: whtRate,
+              wht_amount: args.amount * whtRate,
+              net_payment: args.amount - (args.amount * whtRate),
+              service_type: serviceType,
+              wht_percentage: (whtRate * 100).toFixed(1) + '%'
+            };
+            break;
+          }
+        }
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: `🧮 Tax Calculation: ${args.tax_type}\n\n${Object.entries(result).map(([key, value]) => `• ${key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}: ${typeof value === 'number' ? 'KES ' + value.toLocaleString() : value}`).join('\n')}\n\n💡 This is an estimate. Actual taxes may vary based on specific circumstances.`
+            }
+          ]
+        };
+      }
+
+      case "check_compliance_status": {
+        // Get all tax obligations for the taxpayer
+        const { data: obligations, error: obligationsError } = await supabase
+          .from('tax_obligations')
+          .select('*')
+          .eq('taxpayer_id', args.taxpayer_id);
+
+        if (obligationsError) throw obligationsError;
+
+        // Get taxpayer details
+        const { data: taxpayer, error: taxpayerError } = await supabase
+          .from('taxpayers')
+          .select('*')
+          .eq('id', args.taxpayer_id)
+          .single();
+
+        if (taxpayerError) throw taxpayerError;
+
+        const currentDate = new Date();
+        const overdueObligations = obligations?.filter(o => 
+          new Date(o.due_date) < currentDate && o.status !== 'paid'
+        ) || [];
+
+        const upcomingObligations = obligations?.filter(o => {
+          const dueDate = new Date(o.due_date);
+          const nextWeek = new Date(currentDate);
+          nextWeek.setDate(currentDate.getDate() + 7);
+          return dueDate >= currentDate && dueDate <= nextWeek && o.status !== 'paid';
+        }) || [];
+
+        const complianceStatus = {
+          taxpayer_name: taxpayer.business_name,
+          kra_pin: taxpayer.kra_pin,
+          total_obligations: obligations?.length || 0,
+          paid_obligations: obligations?.filter(o => o.status === 'paid').length || 0,
+          pending_obligations: obligations?.filter(o => o.status === 'pending').length || 0,
+          overdue_obligations: overdueObligations.length,
+          upcoming_obligations: upcomingObligations.length,
+          total_amount_due: obligations?.reduce((sum, o) => sum + (o.amount_due - o.amount_paid), 0) || 0,
+          total_penalties: obligations?.reduce((sum, o) => sum + o.penalties, 0) || 0,
+          total_interest: obligations?.reduce((sum, o) => sum + o.interest, 0) || 0,
+          compliance_certificate_eligible: overdueObligations.length === 0,
+          compliance_status: overdueObligations.length === 0 ? 'COMPLIANT' : 'NON-COMPLIANT',
+          risk_level: overdueObligations.length === 0 ? 'LOW' : overdueObligations.length <= 2 ? 'MEDIUM' : 'HIGH'
+        };
+
+        const recommendations = [];
+        if (overdueObligations.length > 0) {
+          recommendations.push(`💰 Pay ${overdueObligations.length} overdue obligation(s) immediately`);
+          recommendations.push('📞 Contact KRA for payment plan if needed');
+          recommendations.push('🔔 Set up payment reminders to avoid future delays');
+        } else {
+          recommendations.push('✅ Great job! You are tax compliant');
+          recommendations.push('📅 Continue filing returns on time');
+          recommendations.push('💰 Pay taxes before due dates');
+        }
+
+        if (upcomingObligations.length > 0) {
+          recommendations.push(`⏰ ${upcomingObligations.length} obligation(s) due within 7 days`);
+        }
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: `📊 Compliance Status Report\n\n🏢 ${complianceStatus.taxpayer_name}\n📄 KRA PIN: ${complianceStatus.kra_pin}\n\n${complianceStatus.compliance_status === 'COMPLIANT' ? '✅' : '❌'} Status: ${complianceStatus.compliance_status}\n🎯 Risk Level: ${complianceStatus.risk_level}\n📜 Certificate Eligible: ${complianceStatus.compliance_certificate_eligible ? '✅ YES' : '❌ NO'}\n\n📈 Obligations Summary:\n• Total: ${complianceStatus.total_obligations}\n• Paid: ${complianceStatus.paid_obligations}\n• Pending: ${complianceStatus.pending_obligations}\n• Overdue: ${complianceStatus.overdue_obligations}\n• Due This Week: ${complianceStatus.upcoming_obligations}\n\n💰 Financial Summary:\n• Amount Due: KES ${complianceStatus.total_amount_due.toLocaleString()}\n• Penalties: KES ${complianceStatus.total_penalties.toLocaleString()}\n• Interest: KES ${complianceStatus.total_interest.toLocaleString()}\n\n💡 Recommendations:\n${recommendations.map(r => `${r}`).join('\n')}`
+            }
+          ]
+        };
+      }
+
+      case "get_kra_rates": {
+        let rates = {};
+
+        if (args.rate_type === 'all' || !args.rate_type) {
+          rates = {
+            VAT: {
+              standard_rate: `${(KENYA_TAX_RATES.VAT_STANDARD * 100)}%`,
+              zero_rate: `${(KENYA_TAX_RATES.VAT_ZERO * 100)}%`,
+              exempt: "No VAT charged"
+            },
+            PAYE: {
+              tax_bands: PAYE_TAX_BANDS.map(band => ({
+                income_range: `KES ${band.min.toLocaleString()} - ${band.max === Infinity ? 'Above' : band.max.toLocaleString()}`,
+                rate: `${(band.rate * 100)}%`
+              })),
+              personal_relief: `KES ${KENYA_TAX_RATES.PAYE_PERSONAL_RELIEF.toLocaleString()}/month`,
+              insurance_relief_max: `KES ${KENYA_TAX_RATES.INSURANCE_RELIEF_MAX.toLocaleString()}/month`
+            },
+            NSSF: {
+              rate: `${(KENYA_TAX_RATES.NSSF_RATE * 100)}%`,
+              ceiling: "KES 18,000/month",
+              description: "6% of pensionable pay up to KES 18,000"
+            },
+            NHIF: {
+              description: "Based on gross pay bands",
+              range: "KES 150 - 1,700 depending on salary"
+            },
+            HOUSING_LEVY: {
+              rate: `${(KENYA_TAX_RATES.HOUSING_LEVY_RATE * 100)}%`,
+              description: "1.5% of gross salary"
+            },
+            WITHHOLDING_TAX: Object.entries(KENYA_TAX_RATES.WHT_RATES).map(([service, rate]) => ({
+              service_type: service,
+              rate: `${(rate * 100)}%`
+            }))
+          };
+        } else {
+          switch (args.rate_type) {
+            case 'VAT':
+              rates = {
+                standard_rate: `${(KENYA_TAX_RATES.VAT_STANDARD * 100)}%`,
+                zero_rate: `${(KENYA_TAX_RATES.VAT_ZERO * 100)}%`,
+                exempt: "No VAT charged"
+              };
+              break;
+            case 'PAYE':
+              rates = {
+                tax_bands: PAYE_TAX_BANDS,
+                personal_relief: KENYA_TAX_RATES.PAYE_PERSONAL_RELIEF
+              };
+              break;
+            case 'WHT':
+              rates = KENYA_TAX_RATES.WHT_RATES;
+              break;
+            case 'NHIF':
+              rates = { description: "KES 150 - 1,700 based on salary bands" };
+              break;
+            case 'NSSF':
+              rates = { 
+                rate: KENYA_TAX_RATES.NSSF_RATE, 
+                ceiling: 18000 
+              };
+              break;
+          }
+        }
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: `📊 KRA Tax Rates (${args.rate_type || 'All'})\n\n${JSON.stringify(rates, null, 2).replace(/[{}",]/g, '').replace(/\n\s+/g, '\n').trim()}\n\n📅 Rates current as of 2025\n💡 Rates may change - always verify with KRA for latest updates`
+            }
+          ]
+        };
+      }
+
+      case "generate_tax_report": {
+        const { data: taxpayer } = await supabase
+          .from('taxpayers')
+          .select('*')
+          .eq('id', args.taxpayer_id)
+          .single();
+
+        const { data: obligations } = await supabase
+          .from('tax_obligations')
+          .select('*')
+          .eq('taxpayer_id', args.taxpayer_id)
+          .gte('period_start', args.period_start)
+          .lte('period_end', args.period_end);
+
+        const { data: vatReturns } = await supabase
+          .from('vat_returns')
+          .select('*')
+          .eq('taxpayer_id', args.taxpayer_id)
+          .gte('filing_date', args.period_start)
+          .lte('filing_date', args.period_end);
+
+        const { data: payeReturns } = await supabase
+          .from('paye_returns')
+          .select('*')
+          .eq('taxpayer_id', args.taxpayer_id)
+          .gte('filing_date', args.period_start)
+          .lte('filing_date', args.period_end);
+
+        const { data: whtReturns } = await supabase
+          .from('withholding_tax')
+          .select('*')
+          .eq('taxpayer_id', args.taxpayer_id)
+          .gte('filing_date', args.period_start)
+          .lte('filing_date', args.period_end);
+
+        let report = {};
+
+        switch (args.report_type) {
+          case 'summary':
+            const totalVAT = vatReturns?.reduce((sum, v) => sum + v.total_due, 0) || 0;
+            const totalPAYE = payeReturns?.reduce((sum, p) => sum + p.total_due, 0) || 0;
+            const totalWHT = whtReturns?.reduce((sum, w) => sum + w.wht_amount, 0) || 0;
+            const totalTaxes = totalVAT + totalPAYE + totalWHT;
+
+            report = {
+              taxpayer: {
+                name: taxpayer?.business_name,
+                kra_pin: taxpayer?.kra_pin
+              },
+              period: `${args.period_start} to ${args.period_end}`,
+              summary: {
+                total_vat_filed: totalVAT,
+                total_paye_filed: totalPAYE,
+                total_wht_filed: totalWHT,
+                total_taxes: totalTaxes,
+                total_obligations: obligations?.length || 0,
+                paid_obligations: obligations?.filter(o => o.status === 'paid').length || 0,
+                pending_amount: obligations?.reduce((sum, o) => sum + (o.amount_due - o.amount_paid), 0) || 0,
+                compliance_rate: obligations?.length ? ((obligations.filter(o => o.status === 'paid').length / obligations.length) * 100).toFixed(1) + '%' : '100%'
+              }
+            };
+            break;
+
+          case 'detailed':
+            report = {
+              taxpayer: taxpayer,
+              period: `${args.period_start} to ${args.period_end}`,
+              vat_returns: vatReturns,
+              paye_returns: payeReturns,
+              withholding_tax: whtReturns,
+              tax_obligations: obligations
+            };
+            break;
+
+          case 'compliance':
+            const currentDate = new Date();
+            const overdueObligations = obligations?.filter(o => 
+              new Date(o.due_date) < currentDate && o.status !== 'paid'
+            ) || [];
+
+            const totalPenalties = obligations?.reduce((sum, o) => sum + o.penalties, 0) || 0;
+            const totalInterest = obligations?.reduce((sum, o) => sum + o.interest, 0) || 0;
+
+            report = {
+              taxpayer: {
+                name: taxpayer?.business_name,
+                kra_pin: taxpayer?.kra_pin
+              },
+              compliance_status: overdueObligations.length === 0 ? 'COMPLIANT' : 'NON-COMPLIANT',
+              overdue_obligations: overdueObligations.length,
+              total_penalties: totalPenalties,
+              total_interest: totalInterest,
+              compliance_certificate_eligible: overdueObligations.length === 0 && totalPenalties === 0,
+              risk_assessment: overdueObligations.length === 0 ? 'LOW RISK'
         const dueDate = getKRADeadline('VAT', new Date(args.period_year, args.period_month - 1));
+        const currentDate = new Date();
         
         const vatReturn: VATReturn = {
           id: generateId(),
@@ -1593,6 +1851,7 @@ async function handleTool(name: string, args: any): Promise<any> {
           filing_date: new Date().toISOString(),
           due_date: dueDate.toISOString().split('T')[0],
           status: 'filed',
+          auto_penalties_calculated: false,
           created_at: new Date().toISOString(),
           updated_at: new Date().toISOString()
         };
@@ -1602,13 +1861,16 @@ async function handleTool(name: string, args: any): Promise<any> {
           vatReturn.vat_on_supplies + vatReturn.vat_on_imported_services - vatReturn.vat_on_purchases
         );
 
-        // Calculate penalties if late and auto-calculate is enabled
+        // Auto-calculate penalties if late filing
         if (args.auto_calculate_penalties && currentDate > dueDate) {
-          vatReturn.penalties = calculatePenalties(
+          const penaltyCalc = calculatePenalties(
             vatReturn.due_date, 
             currentDate.toISOString().split('T')[0], 
             vatReturn.net_vat_due
           );
+          vatReturn.penalties = penaltyCalc.penalties;
+          vatReturn.interest = penaltyCalc.interest;
+          vatReturn.auto_penalties_calculated = true;
         }
 
         vatReturn.total_due = vatReturn.net_vat_due + vatReturn.penalties + vatReturn.interest;
@@ -1622,27 +1884,17 @@ async function handleTool(name: string, args: any): Promise<any> {
         if (error) throw error;
 
         // Log audit trail
-        await logAuditTrail('VAT_RETURN_FILED', args.taxpayer_id, null, data);
+        await logAuditTrail('VAT_RETURN_FILED', args.taxpayer_id, 'VAT_RETURN', data.id, null, data);
 
         const isLate = currentDate > dueDate;
-        const daysLate = isLate ? Math.floor((currentDate.getTime() - dueDate.getTime()) / (1000 * 60 * 60 * 24)) : 0;
+        const refundDue = vatReturn.net_vat_due < 0;
 
         return {
-          content: [{
-            type: "text",
-            text: `✅ VAT RETURN IMEFAILIWA! 📊\n\n` +
-                  `📅 Period: ${args.period_month}/${args.period_year}\n` +
-                  `💰 Taxable Supplies: KES ${args.taxable_supplies.toLocaleString()}\n` +
-                  `💸 Taxable Purchases: KES ${args.taxable_purchases.toLocaleString()}\n` +
-                  `📊 VAT on Supplies: KES ${vatReturn.vat_on_supplies.toLocaleString()}\n` +
-                  `📉 VAT on Purchases: KES ${vatReturn.vat_on_purchases.toLocaleString()}\n` +
-                  `💵 Net VAT Due: KES ${vatReturn.net_vat_due.toLocaleString()}\n` +
-                  `${vatReturn.penalties > 0 ? `⚠️ Penalties: KES ${vatReturn.penalties.toLocaleString()}\n` : ''}` +
-                  `🎯 TOTAL DUE: KES ${vatReturn.total_due.toLocaleString()}\n\n` +
-                  `📅 Due Date: ${vatReturn.due_date}\n` +
-                  `${isLate ? `🚨 LATE BY ${daysLate} DAYS!\n` : '✅ Filed on time!\n'}` +
-                  `🆔 Return ID: ${data.id}\n\n` +
-                  `📝 NEXT STEPS:\n` +
-                  `• Pay KES ${vatReturn.total_due.toLocaleString()} before due date\n` +
-                  `• Keep receipt for compliance\n` +
-                  `• Update Finji when payment is made
+          content: [
+            {
+              type: "text",
+              text: `✅ VAT Return Filed Successfully!\n\n📋 Return Details:\n• Period: ${args.period_month}/${args.period_year}\n• Taxable Supplies: KES ${args.taxable_supplies.toLocaleString()}\n• VAT on Supplies: KES ${vatReturn.vat_on_supplies.toLocaleString()}\n• Taxable Purchases: KES ${args.taxable_purchases.toLocaleString()}\n• VAT on Purchases: KES ${vatReturn.vat_on_purchases.toLocaleString()}\n\n💰 ${refundDue ? 'VAT REFUND DUE' : 'NET VAT DUE'}: KES ${Math.abs(vatReturn.net_vat_due).toLocaleString()}\n${vatReturn.penalties > 0 ? `⚠️ Late Filing Penalty: KES ${vatReturn.penalties.toLocaleString()}` : ''}\n${vatReturn.interest > 0 ? `📈 Interest: KES ${vatReturn.interest.toLocaleString()}` : ''}\n\n💸 TOTAL ${refundDue ? 'REFUND' : 'AMOUNT'}: KES ${Math.abs(vatReturn.total_due).toLocaleString()}\n\n📅 Filed: ${new Date().toLocaleDateString()}\n${isLate ? '⏰ Status: LATE FILING' : '✅ Status: ON TIME'}\n\n🎯 Next Steps:\n${refundDue ? '• Wait for KRA refund processing' : '• Pay by ' + vatReturn.due_date}\n• Keep receipts for audit purposes\n• Set reminder for next month`
+            }
+          ]
+        };
+      }
