@@ -1,0 +1,449 @@
+// supabase/functions/mpesa-processor/deno.json
+{
+  "imports": {
+    "@supabase/functions-js": "https://esm.sh/@supabase/functions-js@2",
+    "@supabase/supabase-js": "https://esm.sh/@supabase/supabase-js@2"
+  },
+  "compilerOptions": {
+    "allowJs": true,
+    "lib": ["deno.window"],
+    "strict": true
+  }
+}
+
+// --------------------------------------------------
+// supabase/config.toml (Project configuration)
+[api]
+enabled = true
+port = 54321
+schemas = ["public", "graphql_public"]
+extra_search_path = ["public", "extensions"]
+max_rows = 1000
+
+[auth]
+enabled = true
+site_url = "http://localhost:3000"
+additional_redirect_urls = ["https://your-domain.com"]
+jwt_expiry = 3600
+refresh_token_rotation_enabled = true
+security_update_password_require_reauthentication = true
+
+[auth.email]
+enable_signup = true
+double_confirm_changes = true
+enable_confirmations = true
+
+[db]
+port = 54322
+shadow_port = 54320
+major_version = 15
+
+[realtime]
+enabled = true
+ip_version = 4
+
+[studio]
+enabled = true
+port = 54323
+api_url = "http://localhost:54321"
+
+[inbucket]
+enabled = true
+port = 54324
+smtp_port = 54325
+pop3_port = 54326
+
+[storage]
+enabled = true
+file_size_limit = "50MiB"
+s3_max_file_size_limit = "5GiB"
+
+[edge_runtime]
+enabled = true
+policy = "per_request"
+inspector_port = 8083
+
+[analytics]
+enabled = false
+
+[functions.mpesa-processor]
+verify_jwt = false
+
+# --------------------------------------------------
+# Environment Variables (.env.local)
+# Add these to your Supabase project settings
+
+SUPABASE_URL=https://your-project-id.supabase.co
+SUPABASE_ANON_KEY=your-anon-key
+SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
+
+# AI/ML APIs
+GEMINI_API_KEY=your-gemini-api-key
+GOOGLE_API_KEY=your-google-vision-api-key
+OPENAI_API_KEY=your-openai-api-key
+
+# WhatsApp Business API
+WHATSAPP_TOKEN=your-whatsapp-token
+WHATSAPP_VERIFY_TOKEN=your-verify-token
+WHATSAPP_PHONE_NUMBER_ID=your-phone-number-id
+
+# --------------------------------------------------
+# Deployment Scripts (package.json equivalent for Deno)
+// scripts/deploy.ts
+import { exec } from "https://deno.land/x/exec/mod.ts";
+
+const commands = [
+  // Deploy M-Pesa processor
+  "supabase functions deploy mpesa-processor",
+  
+  // Set environment variables
+  "supabase secrets set GEMINI_API_KEY=your-key",
+  "supabase secrets set GOOGLE_API_KEY=your-key", 
+  "supabase secrets set WHATSAPP_TOKEN=your-key",
+  
+  // Run database migrations
+  "supabase db push",
+  
+  // Create sample business (optional)
+  "supabase db remote --db-url=your-db-url --execute=\"SELECT create_sample_business('Test Business', '+254700123456', 'retail');\""
+];
+
+for (const cmd of commands) {
+  console.log(`Executing: ${cmd}`);
+  try {
+    await exec(cmd);
+    console.log("✅ Success");
+  } catch (error) {
+    console.error("❌ Error:", error);
+  }
+}
+
+// --------------------------------------------------
+// Testing Configuration
+// supabase/functions/mpesa-processor/test.ts
+import { assertEquals } from "https://deno.land/std@0.208.0/assert/mod.ts";
+
+// Test data
+const testMpesaMessage = `QCK1234567 Confirmed. You have received Ksh1,500.00 from JOHN DOE 254712345678 on 15/1/25 at 2:30 PM. New M-PESA balance is Ksh15,500.00. Transaction cost, Ksh0.00.`;
+
+const testRequest = {
+  tool: "parse_mpesa_statement",
+  parameters: {
+    statement_data: testMpesaMessage,
+    format: "sms_text",
+    business_id: "test-business-id",
+    language: "en"
+  }
+};
+
+// Test the MCP server
+Deno.test("M-Pesa MCP Server - Parse Statement", async () => {
+  const response = await fetch("http://localhost:54321/functions/v1/mpesa-processor", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": "Bearer test-token"
+    },
+    body: JSON.stringify(testRequest)
+  });
+
+  const result = await response.json();
+  
+  assertEquals(result.success, true);
+  assertEquals(result.transactions.length, 1);
+  assertEquals(result.transactions[0].amount, 1500);
+  assertEquals(result.transactions[0].type, "received");
+});
+
+// Load test
+Deno.test("M-Pesa MCP Server - Load Test", async () => {
+  const requests = Array(10).fill(testRequest);
+  const responses = await Promise.all(
+    requests.map(req => 
+      fetch("http://localhost:54321/functions/v1/mpesa-processor", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": "Bearer test-token"
+        },
+        body: JSON.stringify(req)
+      })
+    )
+  );
+
+  for (const response of responses) {
+    const result = await response.json();
+    assertEquals(result.success, true);
+  }
+});
+
+// --------------------------------------------------
+// Health Check Function
+// supabase/functions/health-check/index.ts
+import "jsr:@supabase/functions-js/edge-runtime.d.ts"
+
+Deno.serve(async (req) => {
+  const corsHeaders = {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  };
+
+  if (req.method === 'OPTIONS') {
+    return new Response('ok', { headers: corsHeaders });
+  }
+
+  try {
+    // Check database connection
+    const supabase = createClient(
+      Deno.env.get('SUPABASE_URL') ?? '',
+      Deno.env.get('SUPABASE_ANON_KEY') ?? ''
+    );
+
+    const { data, error } = await supabase
+      .from('business_profiles')
+      .select('count')
+      .limit(1);
+
+    // Check external APIs
+    const apiChecks = {
+      gemini: !!Deno.env.get('GEMINI_API_KEY'),
+      google_vision: !!Deno.env.get('GOOGLE_API_KEY'),
+      whatsapp: !!Deno.env.get('WHATSAPP_TOKEN')
+    };
+
+    return new Response(JSON.stringify({
+      status: 'healthy',
+      timestamp: new Date().toISOString(),
+      database: error ? 'error' : 'connected',
+      apis: apiChecks,
+      version: '1.0.0'
+    }), {
+      headers: { 
+        ...corsHeaders,
+        'Content-Type': 'application/json'
+      }
+    });
+
+  } catch (error) {
+    return new Response(JSON.stringify({
+      status: 'unhealthy',
+      error: error.message,
+      timestamp: new Date().toISOString()
+    }), {
+      status: 500,
+      headers: { 
+        ...corsHeaders,
+        'Content-Type': 'application/json'
+      }
+    });
+  }
+});
+
+// --------------------------------------------------
+// Client Usage Example
+// client-example.ts
+const SUPABASE_URL = 'https://your-project.supabase.co';
+const SUPABASE_ANON_KEY = 'your-anon-key';
+
+class FinjiMpesaClient {
+  private baseUrl: string;
+  private apiKey: string;
+
+  constructor(supabaseUrl: string, apiKey: string) {
+    this.baseUrl = `${supabaseUrl}/functions/v1`;
+    this.apiKey = apiKey;
+  }
+
+  async parseMpesaStatement(statementData: string, businessId: string, format: string = 'sms_text') {
+    const response = await fetch(`${this.baseUrl}/mpesa-processor`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${this.apiKey}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        tool: 'parse_mpesa_statement',
+        parameters: {
+          statement_data: statementData,
+          format,
+          business_id: businessId,
+          language: 'en'
+        }
+      })
+    });
+
+    return await response.json();
+  }
+
+  async categorizeTransactions(transactions: any[], businessId: string) {
+    const response = await fetch(`${this.baseUrl}/mpesa-processor`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${this.apiKey}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        tool: 'categorize_transactions',
+        parameters: {
+          transactions,
+          business_id: businessId,
+          learning_mode: true
+        }
+      })
+    });
+
+    return await response.json();
+  }
+
+  async detectAnomalies(businessId: string, sensitivity: string = 'medium') {
+    const response = await fetch(`${this.baseUrl}/mpesa-processor`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${this.apiKey}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        tool: 'detect_anomalies',
+        parameters: {
+          business_id: businessId,
+          sensitivity,
+          time_window: '7d'
+        }
+      })
+    });
+
+    return await response.json();
+  }
+
+  async getInsights(businessId: string, period: string = 'month') {
+    const response = await fetch(`${this.baseUrl}/mpesa-processor`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${this.apiKey}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        tool: 'get_transaction_insights',
+        parameters: {
+          business_id: businessId,
+          period,
+          metrics: ['revenue', 'expenses', 'trends']
+        }
+      })
+    });
+
+    return await response.json();
+  }
+}
+
+// Usage example
+const client = new FinjiMpesaClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+// Example: Parse M-Pesa statement
+const mpesaStatement = "QCK1234567 Confirmed. You have received Ksh1,500.00 from JOHN DOE...";
+const result = await client.parseMpesaStatement(mpesaStatement, 'business-123');
+console.log('Parsed transactions:', result.transactions);
+
+// Example: Get business insights
+const insights = await client.getInsights('business-123', 'month');
+console.log('Business insights:', insights);
+
+// --------------------------------------------------
+// Monitoring & Logging Setup
+// supabase/functions/_shared/logger.ts
+export interface LogEntry {
+  level: 'info' | 'warn' | 'error' | 'debug';
+  message: string;
+  data?: any;
+  timestamp: string;
+  function_name: string;
+  business_id?: string;
+}
+
+export class Logger {
+  private functionName: string;
+
+  constructor(functionName: string) {
+    this.functionName = functionName;
+  }
+
+  private log(level: LogEntry['level'], message: string, data?: any, businessId?: string) {
+    const entry: LogEntry = {
+      level,
+      message,
+      data,
+      timestamp: new Date().toISOString(),
+      function_name: this.functionName,
+      business_id: businessId
+    };
+
+    console.log(JSON.stringify(entry));
+  }
+
+  info(message: string, data?: any, businessId?: string) {
+    this.log('info', message, data, businessId);
+  }
+
+  warn(message: string, data?: any, businessId?: string) {
+    this.log('warn', message, data, businessId);
+  }
+
+  error(message: string, data?: any, businessId?: string) {
+    this.log('error', message, data, businessId);
+  }
+
+  debug(message: string, data?: any, businessId?: string) {
+    this.log('debug', message, data, businessId);
+  }
+}
+
+// --------------------------------------------------
+// Performance Monitoring
+// supabase/functions/_shared/performance.ts
+export class PerformanceMonitor {
+  private startTime: number;
+  private checkpoints: Map<string, number> = new Map();
+
+  constructor() {
+    this.startTime = performance.now();
+  }
+
+  checkpoint(name: string) {
+    this.checkpoints.set(name, performance.now());
+  }
+
+  getElapsed(checkpoint?: string): number {
+    const endTime = checkpoint ? this.checkpoints.get(checkpoint) || performance.now() : performance.now();
+    return endTime - this.startTime;
+  }
+
+  getCheckpointTime(checkpoint: string): number | undefined {
+    const checkpointTime = this.checkpoints.get(checkpoint);
+    if (!checkpointTime) return undefined;
+    
+    const previousCheckpoints = Array.from(this.checkpoints.entries())
+      .filter(([, time]) => time < checkpointTime)
+      .sort(([, a], [, b]) => b - a);
+    
+    const previousTime = previousCheckpoints[0]?.[1] || this.startTime;
+    return checkpointTime - previousTime;
+  }
+
+  getSummary() {
+    const total = this.getElapsed();
+    const checkpoints = Object.fromEntries(
+      Array.from(this.checkpoints.entries()).map(([name, time]) => [
+        name,
+        {
+          absolute: time - this.startTime,
+          relative: this.getCheckpointTime(name)
+        }
+      ])
+    );
+
+    return {
+      total_ms: total,
+      checkpoints
+    };
+  }
+}
