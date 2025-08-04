@@ -1,4 +1,4 @@
-## Is the code in this file "invoice MCP" complete?
+## invoice MCP server 
 
 The code in `Finji Invoice MCP Server.ts` is **highly** complete. It covers all major aspects of a modern, Kenya-focused Invoice MCP (Multi-Channel Protocol) server, including core business logic, utilities, validation, WhatsApp integration, PDF generation, edge function endpoints, and database schema documentation.
 
