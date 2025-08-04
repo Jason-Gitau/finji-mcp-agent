@@ -181,3 +181,124 @@ The enhanced MCP server is now production-ready for your Finji platform with:
 ✅ Comprehensive compliance tracking
 
 This will seamlessly integrate with your existing Finji ecosystem and make tax compliance as simple as sending a WhatsApp message! 🎉
+
+
+ Enhanced User Experience
+
+User-friendly error messages in both English and Swahili
+Comprehensive validation with helpful suggestions
+Rich formatted responses with emojis and clear structure
+Smart status indicators (🟢🟡🔴) for urgency levels
+
+2. New MCP Tools
+estimate_monthly_taxes - Perfect for SME cash flow planning
+
+Calculates VAT, PAYE, WHT estimates
+Provides cash flow impact percentage
+Gives actionable recommendations
+
+sync_payments_to_tax - Bridges M-Pesa MCP with tax compliance
+
+Auto-matches M-Pesa payments to tax obligations
+Uses keyword detection for KRA payments
+Provides matched/unmatched payment reports
+
+get_compliance_score - Sophisticated compliance tracking
+
+0-100 scoring system with risk levels
+Breaks down factors (filing, payments, accuracy)
+Certificate eligibility determination
+Actionable improvement tips
+
+calculate_auto_penalties - Automated penalty management
+
+Calculates KRA-compliant penalties and interest
+Handles bulk penalty updates
+Provides detailed breakdown
+
+queue_kra_submission - Offline-first submission system
+
+Queues returns for KRA submission
+Retry logic for failed submissions
+Priority handling
+
+get_upcoming_deadlines - Proactive deadline management
+
+Smart deadline reminders with urgency levels
+Estimated tax amounts
+Takes KRA holidays into account
+
+3. Enhanced Existing Tools
+
+Auto-penalty calculation in VAT and PAYE filing
+Better error handling with specific guidance
+Audit trail logging for all changes
+Improved validation with user-friendly messages
+Smart date handling (weekends, holidays)
+
+4. Production-Ready Features
+Audit Trail System
+
+Tracks all changes with before/after data
+User identification and timestamps
+Compliance-ready logging
+
+Compliance Scoring
+
+Real-time compliance assessment
+Risk level determination
+Certificate eligibility tracking
+
+Offline-First Architecture
+
+Submission queue for unreliable connections
+Retry mechanisms
+Status tracking
+
+Enhanced Date Handling
+
+KRA holiday awareness
+Weekend adjustment
+Proper deadline calculations
+
+🎯 Perfect Integration with Finji
+This enhanced MCP now seamlessly integrates with your Finji ecosystem:
+
+WhatsApp Friendly: All responses are formatted for easy WhatsApp sharing
+M-Pesa Integration: sync_payments_to_tax connects with your M-Pesa MCP
+SME Focused: estimate_monthly_taxes helps with cash flow planning
+Compliance Made Simple: Automated penalties, scoring, and reminders
+
+💡 Example Usage in Finji
+typescript// User asks: "Finji, estimate my monthly taxes"
+await finjiMain.callMCP('tax-compliance', 'estimate_monthly_taxes', {
+  monthly_revenue: 500000,
+  monthly_expenses: 300000,
+  employee_count: 3,
+  average_salary: 50000,
+  business_type: 'company',
+  is_vat_registered: true
+});
+
+// User asks: "Check my compliance score"
+await finjiMain.callMCP('tax-compliance', 'get_compliance_score', {
+  taxpayer_id: 'user-123'
+});
+🚧 Database Schema
+I included the complete database schema at the bottom of the code for:
+
+compliance_scores table
+kra_submission_queue table
+tax_audit_logs table
+Enhanced columns for existing tables
+
+✅ Ready for Production
+Your enhanced tax compliance MCP is now:
+
+User-friendly with clear messaging
+Audit-compliant with full logging
+Scalable with queue-based submissions
+Intelligent with compliance scoring
+Integrated with your M-Pesa and invoice MCPs
+
+This will make tax compliance as simple as sending a WhatsApp message to Finji! 🚀
