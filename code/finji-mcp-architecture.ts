@@ -1066,8 +1066,20 @@ Deno.serve(async (req) => {
       throw new Error('Only POST method allowed');
     }
     
-    const body = await req.json().catch(() => {
-      throw new Error('Invalid JSON in request body');
+    // Check request size first
+const contentLength = req.headers.get('content-length');
+  if (contentLength && parseInt(contentLength) > 5 * 1024 * 1024) { // 5MB limit
+  throw new Error('Request too large. Please reduce file size or split into smaller requests.');
+  }
+
+  const body = await req.json().catch(() => {
+  throw new Error('Invalid JSON in request body');
+  });
+
+  // Check specific field sizes
+  if (body.image_data && body.image_data.length > 4 * 1024 * 1024) { // 4MB image limit
+  throw new Error('Image too large. Please compress or crop your screenshot.');
+  }
     });
     
     const { 
