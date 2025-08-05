@@ -1376,15 +1376,23 @@ Respond in a WhatsApp-friendly way:
       });
       
     } catch (error) {
-      console.error(`Action failed: ${action.tool}`, error);
-      
-      results.push({ 
-        action: action.tool, 
-        error: error.message, 
-        success: false,
-        server: action.server,
-        fallback_available: this.hasFallback(action.tool)
-      });
+  console.error(`Action failed: ${action.tool}`, error);
+  
+  // Log action failure
+  await this.monitor.logEvent('action_failed', {
+    action: action.tool,
+    server: action.server,
+    error: error.message,
+    timeout: error.message.includes('timeout')
+  }, businessId);
+  
+  results.push({ 
+    action: action.tool, 
+    error: error.message, 
+    success: false,
+    server: action.server,
+    fallback_available: this.hasFallback(action.tool)
+  });
       
       // Try fallback
       if (this.hasFallback(action.tool)) {
@@ -1447,6 +1455,8 @@ private async executeFallback(toolName: string, businessId: string) {
 
 // Supabase Edge Function Handler - Enhanced for WhatsApp
 Deno.serve(async (req) => {
+  const requestStart = Date.now();
+  const monitor = new MonitoringManager();
   try {
     // Validate request
     if (req.method !== 'POST') {
@@ -1534,7 +1544,18 @@ if (!current || current.resetTime < now) {
       }
     });
   } } catch (error) {
-    console.error('Finji request failed:', error);
+    const processingTime = Date.now() - requestStart;
+  
+  // Log request failure with detailed context
+  await monitor.logEvent('request_failed', {
+    error: error.message,
+    processing_time: processingTime,
+    request_method: req.method,
+    user_agent: req.headers.get('user-agent'),
+    content_length: req.headers.get('content-length')
+  }, body?.business_id);
+  
+  console.error('Finji request failed:', error)
     
     // Determine appropriate error response
     let status = 500;
