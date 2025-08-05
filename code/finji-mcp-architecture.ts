@@ -29,6 +29,47 @@ class TimeoutManager {
     return Promise.race([promise, timeoutPromise]);
   }
 }
+// Why: Prevent out-of-memory errors with large data.
+class MemoryManager {
+  static checkMemoryUsage(): number {
+    // Approximate memory usage check
+    if (typeof Deno !== 'undefined' && Deno.memoryUsage) {
+      const usage = Deno.memoryUsage();
+      return usage.heapUsed / (1024 * 1024); // MB
+    }
+    return 0;
+  }
+  
+  static async processLargeData<T>(
+    data: T[], 
+    processor: (chunk: T[]) => Promise<any>,
+    chunkSize: number = 50
+  ) {
+    const results = [];
+    
+    for (let i = 0; i < data.length; i += chunkSize) {
+      const chunk = data.slice(i, i + chunkSize);
+      
+      // Check memory before processing
+      const memUsage = this.checkMemoryUsage();
+      if (memUsage > 100) { // > 100MB
+        console.warn(`High memory usage: ${memUsage}MB`);
+        await new Promise(resolve => setTimeout(resolve, 100)); // Brief pause
+      }
+      
+      const chunkResult = await processor(chunk);
+      results.push(...(Array.isArray(chunkResult) ? chunkResult : [chunkResult]));
+      
+      // Force garbage collection hint
+      if (typeof global !== 'undefined' && global.gc) {
+        global.gc();
+      }
+    }
+    
+    return results;
+  }
+}
+
 class QueueManager {
   private supabase;
   
@@ -137,46 +178,6 @@ class QueueManager {
       chunks.push(array.slice(i, i + size));
     }
     return chunks;
-  }
-}
-// Why: Prevent out-of-memory errors with large data.
-class MemoryManager {
-  static checkMemoryUsage(): number {
-    // Approximate memory usage check
-    if (typeof Deno !== 'undefined' && Deno.memoryUsage) {
-      const usage = Deno.memoryUsage();
-      return usage.heapUsed / (1024 * 1024); // MB
-    }
-    return 0;
-  }
-  
-  static async processLargeData<T>(
-    data: T[], 
-    processor: (chunk: T[]) => Promise<any>,
-    chunkSize: number = 50
-  ) {
-    const results = [];
-    
-    for (let i = 0; i < data.length; i += chunkSize) {
-      const chunk = data.slice(i, i + chunkSize);
-      
-      // Check memory before processing
-      const memUsage = this.checkMemoryUsage();
-      if (memUsage > 100) { // > 100MB
-        console.warn(`High memory usage: ${memUsage}MB`);
-        await new Promise(resolve => setTimeout(resolve, 100)); // Brief pause
-      }
-      
-      const chunkResult = await processor(chunk);
-      results.push(...(Array.isArray(chunkResult) ? chunkResult : [chunkResult]));
-      
-      // Force garbage collection hint
-      if (typeof global !== 'undefined' && global.gc) {
-        global.gc();
-      }
-    }
-    
-    return results;
   }
 }
 
