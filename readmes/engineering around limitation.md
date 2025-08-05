@@ -480,4 +480,4 @@ async function testMemory() {
 - No timeouts or crashes
 - Scales automatically
 
-Ready for M-Pesa MCP error handling fixes?
+
