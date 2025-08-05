@@ -1210,12 +1210,19 @@ Return JSON with: intent, confidence, required_servers, actions.`;
     }
     const jsonText = data.candidates[0].content.parts[0].text;
     return JSON.parse(jsonText.replace(/```json\n?|\n?```/g, ''));
-  }catch (error) {
-    console.error('AI intent analysis failed:', error);
-    
-   // FALLBACK: Basic keyword matching
-    return  this.fallbackIntentAnalysis(message, language);
-  }
+  } catch (error) {
+  console.error('AI intent analysis failed:', error);
+  
+  // Log AI failure for monitoring
+  await this.monitor.logEvent('ai_failure', {
+    error: error.message,
+    api_type: 'gemini',
+    operation: 'intent_analysis'
+  }, businessId);
+  
+  // FALLBACK: Basic keyword matching
+  return this.fallbackIntentAnalysis(message, language);
+}
 }
   private fallbackIntentAnalysis(message: string, language: string) {
   const msg = message.toLowerCase();
