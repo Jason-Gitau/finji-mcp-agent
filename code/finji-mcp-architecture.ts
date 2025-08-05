@@ -875,7 +875,7 @@ class FinjiAgent {
     });
     
     // Step 2: Enhanced intent analysis with context
-    const intent = await this.analyzeWhatsAppIntent(message, language, context.context);
+    const intent = await this.analyzeWhatsAppIntent(message, language, context.context, businessId);
     
     // Step 3: Check if heavy operation, queue if needed
     if (this.isHeavyOperation(intent)) {
@@ -1259,6 +1259,25 @@ const contentLength = req.headers.get('content-length');
       platform = 'whatsapp',
       image_data = null 
     } = body;
+    // Basic rate limiting per business
+const rateLimiter = new Map<string, { count: number; resetTime: number }>();
+const now = Date.now();
+const windowMs = 60 * 1000; // 1 minute window
+const maxRequests = 20; // 20 requests per minute per business
+
+const businessKey = `rate_limit_${business_id}`;
+const currentWindow = Math.floor(now / windowMs);
+const resetTime = (currentWindow + 1) * windowMs;
+
+const current = rateLimiter.get(businessKey);
+if (!current || current.resetTime < now) {
+  rateLimiter.set(businessKey, { count: 1, resetTime });
+} else if (current.count >= maxRequests) {
+  throw new Error(`Rate limit exceeded. Maximum ${maxRequests} requests per minute. Try again in ${Math.ceil((resetTime - now) / 1000)} seconds.`);
+} else {
+  current.count++;
+}
+    
     
     // Validate required fields
     if (!message || !business_id) {
