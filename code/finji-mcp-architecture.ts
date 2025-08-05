@@ -758,8 +758,13 @@ class FinjiAgent {
     this.securityManager = new BusinessSecurityManager();
   }
 
-  async processWhatsAppMessage(message: string, businessId: string, userPhone: string, language: 'en' | 'sw' = 'en') {
-    // Enhanced processing for WhatsApp-first approach
+ async processWhatsAppMessage(message: string, businessId: string, userPhone: string, language: 'en' | 'sw' = 'en') {
+  // Step 0: SECURITY - Validate and set business context
+  if (!this.securityManager.validateBusinessId(businessId)) {
+    throw new Error('Invalid business identifier provided');
+  }
+  
+  await this.securityManager.setBusinessContext(businessId);
     
     // Step 1: Get business context and user history
     const memoryServer = this.mcpServers.find(s => s.name === "memory_learning")!;
