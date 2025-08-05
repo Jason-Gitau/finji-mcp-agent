@@ -219,6 +219,177 @@ class APIQuotaManager {
     };
   }
 }
+class MonitoringManager {
+  private supabase;
+  private criticalErrors = new Set(['quota_exceeded', 'security_violation', 'timeout', 'ai_failure']);
+  
+  constructor() {
+    this.supabase = createClient(
+      Deno.env.get('SUPABASE_URL') ?? '',
+      Deno.env.get('SUPABASE_ANON_KEY') ?? ''
+    );
+  }
+
+  // Log structured events for monitoring
+  async logEvent(eventType: string, data: any, businessId?: string) {
+    const event = {
+      event_type: eventType,
+      business_id: businessId,
+      data: data,
+      timestamp: new Date().toISOString(),
+      severity: this.getSeverity(eventType),
+      environment: Deno.env.get('ENVIRONMENT') || 'production'
+    };
+
+    // Log to console for immediate visibility
+    if (event.severity === 'critical' || event.severity === 'error') {
+      console.error(`🚨 ${eventType}:`, JSON.stringify(event, null, 2));
+    } else {
+      console.log(`📊 ${eventType}:`, JSON.stringify(event));
+    }
+
+    // Store in database for analysis
+    try {
+      await this.supabase.from('monitoring_events').insert(event);
+    } catch (error) {
+      console.error('Failed to store monitoring event:', error);
+    }
+
+    // Send critical alerts immediately
+    if (this.criticalErrors.has(eventType)) {
+      await this.sendCriticalAlert(event);
+    }
+  }
+
+  // Track business KPIs
+  async trackKPI(businessId: string, kpiType: string, value: number, metadata?: any) {
+    const kpi = {
+      business_id: businessId,
+      kpi_type: kpiType,
+      value: value,
+      metadata: metadata,
+      recorded_at: new Date().toISOString()
+    };
+
+    await this.supabase.from('business_kpis').insert(kpi);
+    
+    console.log(`📈 KPI tracked: ${kpiType} = ${value} for business ${businessId}`);
+  }
+
+  // Send critical alerts (you'd integrate with email/SMS/Slack)
+  private async sendCriticalAlert(event: any) {
+    const alertMessage = `🚨 CRITICAL ALERT 🚨
+Event: ${event.event_type}
+Business: ${event.business_id || 'System'}
+Time: ${event.timestamp}
+Data: ${JSON.stringify(event.data)}
+
+Requires immediate attention!`;
+
+    console.error(alertMessage);
+    
+    // TODO: Integrate with your alerting system
+    // - Send email via SendGrid/Resend
+    // - Send SMS via Twilio
+    // - Post to Slack webhook
+    // - Create PagerDuty incident
+    
+    // Example Slack webhook (replace with your webhook URL)
+    try {
+      await fetch(Deno.env.get('SLACK_WEBHOOK_URL') || '', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text: alertMessage,
+          channel: '#finji-alerts',
+          username: 'Finji Monitor'
+        })
+      });
+    } catch (error) {
+      console.error('Failed to send Slack alert:', error);
+    }
+  }
+
+  private getSeverity(eventType: string): string {
+    const severityMap = {
+      // Critical - immediate attention needed
+      'security_violation': 'critical',
+      'data_breach_attempt': 'critical',
+      'system_failure': 'critical',
+      'quota_exceeded': 'critical',
+      
+      // Error - needs attention soon
+      'ai_failure': 'error',
+      'timeout': 'error',
+      'api_error': 'error',
+      'parsing_failed': 'error',
+      
+      // Warning - monitor closely
+      'high_memory_usage': 'warning',
+      'rate_limit_hit': 'warning',
+      'slow_response': 'warning',
+      
+      // Info - normal operations
+      'mpesa_parsed': 'info',
+      'invoice_created': 'info',
+      'user_interaction': 'info'
+    };
+
+    return severityMap[eventType] || 'info';
+  }
+
+  // Generate monitoring dashboard data
+  async getDashboardStats(timeRange: string = '24h') {
+    const hours = timeRange === '24h' ? 24 : 1;
+    const since = new Date(Date.now() - (hours * 60 * 60 * 1000)).toISOString();
+
+    const { data: events } = await this.supabase
+      .from('monitoring_events')
+      .select('*')
+      .gte('timestamp', since);
+
+    const stats = {
+      total_events: events?.length || 0,
+      critical_events: events?.filter(e => e.severity === 'critical').length || 0,
+      error_events: events?.filter(e => e.severity === 'error').length || 0,
+      unique_businesses: new Set(events?.map(e => e.business_id).filter(Boolean)).size,
+      top_errors: this.getTopErrors(events || []),
+      system_health: this.calculateSystemHealth(events || [])
+    };
+
+    return stats;
+  }
+
+  private getTopErrors(events: any[]) {
+    const errorCounts = new Map();
+    
+    events
+      .filter(e => e.severity === 'error' || e.severity === 'critical')
+      .forEach(e => {
+        errorCounts.set(e.event_type, (errorCounts.get(e.event_type) || 0) + 1);
+      });
+
+    return Array.from(errorCounts.entries())
+      .sort(([,a], [,b]) => b - a)
+      .slice(0, 5);
+  }
+
+  private calculateSystemHealth(events: any[]): string {
+    const totalEvents = events.length;
+    if (totalEvents === 0) return 'healthy';
+
+    const errorEvents = events.filter(e => 
+      e.severity === 'error' || e.severity === 'critical'
+    ).length;
+
+    const errorRate = errorEvents / totalEvents;
+
+    if (errorRate > 0.1) return 'critical';  // >10% errors
+    if (errorRate > 0.05) return 'degraded'; // >5% errors
+    return 'healthy';
+  }
+}
+
 
 
 class QueueManager {
@@ -844,6 +1015,8 @@ class FinjiAgent {
   private queueManager: QueueManager;
   private securityManager: BusinessSecurityManager;
   private quotaManager: APIQuotaManager;
+  private monitor: MonitoringManager;
+  
   
   
   constructor() {
@@ -857,6 +1030,7 @@ class FinjiAgent {
     this.queueManager = new QueueManager();
     this.securityManager = new BusinessSecurityManager();
     this.quotaManager = new APIQuotaManager();
+    this.monitor = new MonitoringManager();
   }
 
  async processWhatsAppMessage(message: string, businessId: string, userPhone: string, language: 'en' | 'sw' = 'en') {
