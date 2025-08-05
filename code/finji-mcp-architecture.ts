@@ -14,6 +14,21 @@ interface MCPTool {
   description: string;
   parameters: any;
 }
+class TimeoutManager {
+  static async withTimeout<T>(
+    promise: Promise<T>, 
+    timeoutMs: number, 
+    operationName: string
+  ): Promise<T> {
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => {
+        reject(new Error(`${operationName} timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+    });
+
+    return Promise.race([promise, timeoutPromise]);
+  }
+}
 
 // 1. M-Pesa & Banking MCP Server (Enhanced)
 class MpesaBankingMCPServer implements MCPServer {
