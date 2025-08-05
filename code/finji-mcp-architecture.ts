@@ -69,6 +69,58 @@ class MemoryManager {
     return results;
   }
 }
+class BusinessSecurityManager {
+  private supabase;
+  
+  constructor() {
+    this.supabase = createClient(
+      Deno.env.get('SUPABASE_URL') ?? '',
+      Deno.env.get('SUPABASE_ANON_KEY') ?? ''
+    );
+  }
+
+  // Set business context for all database operations
+  async setBusinessContext(businessId: string) {
+    if (!businessId || businessId.trim() === '') {
+      throw new Error('Business ID cannot be empty - security violation');
+    }
+
+    // Set the business context for RLS
+    await this.supabase.rpc('set_config', {
+      setting_name: 'app.current_business_id',
+      setting_value: businessId,
+      is_local: true
+    });
+  }
+
+  // Validate business ID format
+  validateBusinessId(businessId: string): boolean {
+    // Business IDs should be UUIDs or specific format
+    const businessIdPattern = /^[a-zA-Z0-9_-]{8,50}$/;
+    return businessIdPattern.test(businessId);
+  }
+
+  // Create isolated supabase client for specific business
+  getIsolatedClient(businessId: string) {
+    if (!this.validateBusinessId(businessId)) {
+      throw new Error('Invalid business ID format');
+    }
+
+    const client = createClient(
+      Deno.env.get('SUPABASE_URL') ?? '',
+      Deno.env.get('SUPABASE_ANON_KEY') ?? ''
+    );
+
+    // Set business context immediately
+    client.rpc('set_config', {
+      setting_name: 'app.current_business_id', 
+      setting_value: businessId,
+      is_local: true
+    });
+
+    return client;
+  }
+}
 
 class QueueManager {
   private supabase;
