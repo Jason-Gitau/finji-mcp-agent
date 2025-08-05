@@ -671,7 +671,8 @@ Respond in a WhatsApp-friendly way:
 - Be encouraging and supportive
 - Match the energy of the user's message`;
 
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`, {
+    try {
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -680,8 +681,44 @@ Respond in a WhatsApp-friendly way:
     });
     
     const data = await response.json();
+      
+    if (!data.candidates?.[0]?.content?.parts?.[0]?.text) {
+      throw new Error('Invalid AI response for message generation');
+    }
     return data.candidates[0].content.parts[0].text;
+      
+    } catch (error) {
+    console.error('AI response generation failed:', error);
+    // Fallback to simple response
+    return this.generateFallbackResponse(query, results, language);
   }
+  
+  
+  private generateFallbackResponse(query: string, results: any[], language: string): string {
+  const hasFailures = results.some(r => !r.success);
+  
+  if (hasFailures) {
+    const failedActions = results.filter(r => !r.success);
+    
+    if (language === 'sw') {
+      if (failedActions.some(a => a.action.includes('parse_mpesa'))) {
+        return "Samahani, sikuweza kusoma statement yako ya M-Pesa. Tafadhali tuma picha wazi zaidi au andika maelezo ya miamala.";
+      }
+      return "Samahani, kuna tatizo la kiufundi. Jaribu tena baada ya dakika chache au wasiliana nasi: +254700123456";
+    } else {
+      if (failedActions.some(a => a.action.includes('parse_mpesa'))) {
+        return "Sorry, I couldn't read your M-Pesa statement. Please send a clearer image or type the transaction details manually.";
+      }
+      return "Sorry, there's a technical issue. Please try again in a few minutes or contact support: +254700123456";
+    }
+  }
+  
+  // If all successful, return success message
+  return language === 'sw' ? 
+    "Umefanikiwa! Nimekamilisha ombi lako." :
+    "Success! I've completed your request.";
+}
+  
 
   private async executeActions(intent: any, businessId: string, userPhone?: string) {
   const results = [];
@@ -801,6 +838,15 @@ private async executeFallback(toolName: string, businessId: string) {
 // Supabase Edge Function Handler - Enhanced for WhatsApp
 Deno.serve(async (req) => {
   try {
+    // Validate request
+    if (req.method !== 'POST') {
+      throw new Error('Only POST method allowed');
+    }
+    
+    const body = await req.json().catch(() => {
+      throw new Error('Invalid JSON in request body');
+    });
+    
     const { 
       message, 
       business_id, 
@@ -808,7 +854,16 @@ Deno.serve(async (req) => {
       language = 'en',
       platform = 'whatsapp',
       image_data = null 
-    } = await req.json();
+    } = body;
+    
+    // Validate required fields
+    if (!message || !business_id) {
+      throw new Error('Missing required fields: message and business_id');
+    }
+    
+    if (message.length > 10000) {
+      throw new Error('Message too long. Please keep under 10,000 characters.');
+    }
     
     const finji = new FinjiAgent();
     
@@ -837,19 +892,41 @@ Deno.serve(async (req) => {
         'Connection': 'keep-alive'
       }
     });
-  } catch (error) {
-    const errorMessage = error.message;
-    const suggestion = errorMessage.includes('parsing') ? 
-      "Please try sending your M-Pesa statement again" :
-      "Please try rephrasing your message";
-      
+  } } catch (error) {
+    console.error('Finji request failed:', error);
+    
+    // Determine appropriate error response
+    let status = 500;
+    let userMessage = "Technical error occurred";
+    let suggestion = "Please try again later";
+    
+    if (error.message.includes('JSON') || error.message.includes('required fields')) {
+      status = 400;
+      userMessage = "Invalid request format";
+      suggestion = "Please check your request and try again";
+    } else if (error.message.includes('timeout')) {
+      status = 504;
+      userMessage = "Request took too long";
+      suggestion = "Please try again with a simpler request";
+    } else if (error.message.includes('quota') || error.message.includes('limit')) {
+      status = 429;
+      userMessage = "Service temporarily busy";  
+      suggestion = "Please try again in a few minutes";
+    }
+    
     return new Response(JSON.stringify({
-      error: errorMessage,
+      success: false,
+      error: userMessage,
       suggestion,
-      support_contact: "+254700123456"
+      support_contact: "+254700123456",
+      timestamp: new Date().toISOString(),
+      request_id: `req_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
     }), {
-      status: 500,
-      headers: { 'Content-Type': 'application/json' }
+      status,
+      headers: { 
+        'Content-Type': 'application/json',
+        'Access-Control-Allow-Origin': '*'
+      }
     });
   }
 });
