@@ -29,6 +29,117 @@ class TimeoutManager {
     return Promise.race([promise, timeoutPromise]);
   }
 }
+class QueueManager {
+  private supabase;
+  
+  constructor() {
+    this.supabase = createClient(
+      Deno.env.get('SUPABASE_URL') ?? '',
+      Deno.env.get('SUPABASE_ANON_KEY') ?? ''
+    );
+  }
+
+  async queueHeavyOperation(businessId: string, operation: string, data: any) {
+    const { data: queueItem, error } = await this.supabase
+      .from('processing_queue')
+      .insert({
+        business_id: businessId,
+        operation_type: operation,
+        request_data: data,
+        status: 'queued'
+      })
+      .select()
+      .single();
+
+    if (error) throw error;
+    
+    // Start processing in background (don't await)
+    this.processInBackground(queueItem.id);
+    
+    return queueItem.id;
+  }
+
+  private async processInBackground(queueId: string) {
+    try {
+      // Mark as processing
+      await this.supabase
+        .from('processing_queue')
+        .update({ 
+          status: 'processing', 
+          started_at: new Date().toISOString() 
+        })
+        .eq('id', queueId);
+
+      // Get queue item
+      const { data: queueItem } = await this.supabase
+        .from('processing_queue')
+        .select('*')
+        .eq('id', queueId)
+        .single();
+
+      if (!queueItem) return;
+
+      // Process based on operation type
+      let result;
+      switch (queueItem.operation_type) {
+        case 'bulk_mpesa_processing':
+          result = await this.processBulkMpesa(queueItem.request_data);
+          break;
+        case 'monthly_analytics':
+          result = await this.generateMonthlyAnalytics(queueItem.request_data);
+          break;
+        default:
+          throw new Error(`Unknown operation: ${queueItem.operation_type}`);
+      }
+
+      // Mark as completed
+      await this.supabase
+        .from('processing_queue')
+        .update({
+          status: 'completed',
+          result: result,
+          completed_at: new Date().toISOString()
+        })
+        .eq('id', queueId);
+
+    } catch (error) {
+      // Mark as failed
+      await this.supabase
+        .from('processing_queue')
+        .update({
+          status: 'failed',
+          error_message: error.message,
+          completed_at: new Date().toISOString()
+        })
+        .eq('id', queueId);
+    }
+  }
+
+  private async processBulkMpesa(data: any) {
+    // Process in smaller chunks to avoid timeout
+    const chunks = this.chunkArray(data.transactions, 20); // 20 transactions per chunk
+    const results = [];
+
+    for (const chunk of chunks) {
+      const chunkResult = await this.processTransactionChunk(chunk, data.business_id);
+      results.push(...chunkResult);
+      
+      // Small delay to prevent overwhelming APIs
+      await new Promise(resolve => setTimeout(resolve, 200));
+    }
+
+    return { processed_count: results.length, transactions: results };
+  }
+
+  private chunkArray(array: any[], size: number) {
+    const chunks = [];
+    for (let i = 0; i < array.length; i += size) {
+      chunks.push(array.slice(i, i + size));
+    }
+    return chunks;
+  }
+}
+
 
 // 1. M-Pesa & Banking MCP Server (Enhanced)
 class MpesaBankingMCPServer implements MCPServer {
