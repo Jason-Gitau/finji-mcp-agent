@@ -648,6 +648,7 @@ class MemoryLearningMCPServer implements MCPServer {
 // 4. Enhanced Main Finji Agent
 class FinjiAgent {
   private mcpServers: MCPServer[];
+  private queueManager: QueueManager;
   
   constructor() {
     this.mcpServers = [
@@ -657,6 +658,7 @@ class FinjiAgent {
       new AnalyticsMCPServer(), // From original
       new MemoryLearningMCPServer()
     ];
+    this.queueManager = new QueueManager();
   }
 
   async processWhatsAppMessage(message: string, businessId: string, userPhone: string, language: 'en' | 'sw' = 'en') {
@@ -672,9 +674,25 @@ class FinjiAgent {
     // Step 2: Enhanced intent analysis with context
     const intent = await this.analyzeWhatsAppIntent(message, language, context.context);
     
-    // Step 3: Execute actions
+    // Step 3: Check if heavy operation, queue if needed
+    if (this.isHeavyOperation(intent)) {
+      const queueId = await this.queueManager.queueHeavyOperation(
+      businessId,
+      intent.intent,
+      { intent, userPhone, message }
+      );
+  
+    return {
+      response: await this.generateQueuedResponse(intent.intent, language),
+      queued: true,
+      queue_id: queueId,
+      estimated_time: this.getEstimatedTime(intent.intent),
+      check_status_url: `/status/${queueId}`
+    };
+  }
+    // Step 3: Execute actions immediately for light operations
     const results = await this.executeActions(intent, businessId, userPhone);
-    
+
     // Step 4: Generate WhatsApp-friendly response
     const response = await this.generateWhatsAppResponse(message, results, language);
     
@@ -693,6 +711,46 @@ class FinjiAgent {
       whatsapp_ready: true
     };
   }
+  private isHeavyOperation(intent: any): boolean {
+  const heavyOperations = [
+    'bulk_mpesa_processing',
+    'monthly_analytics', 
+    'complex_fraud_analysis',
+    'bulk_invoice_generation'
+  ];
+  
+  return heavyOperations.includes(intent.intent) || 
+         (intent.actions && intent.actions.length > 3) || // Multiple actions
+         (intent.estimated_time && intent.estimated_time > 20); // Time estimate > 20s
+}
+
+private async generateQueuedResponse(operation: string, language: string): Promise<string> {
+  const responses = {
+    en: {
+      bulk_mpesa_processing: "I'm processing your M-Pesa statements. This will take 2-3 minutes. I'll send you the results via WhatsApp.",
+      monthly_analytics: "Generating your monthly business report. This will take 3-5 minutes. I'll notify you when ready.",
+      default: "I'm working on your request. This might take a few minutes. I'll get back to you soon!"
+    },
+    sw: {
+      bulk_mpesa_processing: "Ninachakata statements zako za M-Pesa. Itachukua dakika 2-3. Nitakutumia matokeo.",
+      monthly_analytics: "Ninatengeneza ripoti yako ya mwezi. Itachukua dakika 3-5. Nitakujulisha ikiwa tayari.",
+      default: "Ninafanya kazi na ombi lako. Pengine itachukua dakika chache. Nitarudi kwako!"
+    }
+  };
+  
+  return responses[language]?.[operation] || responses[language].default;
+}
+
+private getEstimatedTime(operation: string): string {
+  const timeEstimates = {
+    bulk_mpesa_processing: "2-3 minutes",
+    monthly_analytics: "3-5 minutes", 
+    complex_fraud_analysis: "1-2 minutes",
+    default: "2-4 minutes"
+  };
+  
+  return timeEstimates[operation] || timeEstimates.default;
+}
 
   private async analyzeWhatsAppIntent(message: string, language: string, context: any) {
     const apiKey = Deno.env.get('GEMINI_API_KEY')!;
