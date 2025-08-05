@@ -743,6 +743,8 @@ class MemoryLearningMCPServer implements MCPServer {
 class FinjiAgent {
   private mcpServers: MCPServer[];
   private queueManager: QueueManager;
+  private securityManager: BusinessSecurityManager;
+  
   
   constructor() {
     this.mcpServers = [
@@ -753,6 +755,7 @@ class FinjiAgent {
       new MemoryLearningMCPServer()
     ];
     this.queueManager = new QueueManager();
+    this.securityManager = new BusinessSecurityManager();
   }
 
   async processWhatsAppMessage(message: string, businessId: string, userPhone: string, language: 'en' | 'sw' = 'en') {
