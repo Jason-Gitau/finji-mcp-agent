@@ -684,28 +684,119 @@ Respond in a WhatsApp-friendly way:
   }
 
   private async executeActions(intent: any, businessId: string, userPhone?: string) {
-    const results = [];
-    
-    for (const action of intent.actions || []) {
+  const results = [];
+  
+  // Handle fallback case first
+  if (intent.fallback_message) {
+    return [{
+      action: 'fallback_response',
+      result: { message: intent.fallback_message },
+      success: true
+    }];
+  }
+  
+  for (const action of intent.actions || []) {
+    try {
+      // Validate required parameters
+      if (!businessId) {
+        throw new Error('Business ID is required for all actions');
+      }
+      
       const server = this.mcpServers.find(s => s.name === action.server);
-      if (server) {
-        try {
-          const params = { 
-            ...action.parameters, 
-            business_id: businessId,
-            user_phone: userPhone 
-          };
-          const result = await server.call(action.tool, params);
-          results.push({ action: action.tool, result, success: true });
-        } catch (error) {
-          results.push({ action: action.tool, error: error.message, success: false });
-        }
+      if (!server) {
+        throw new Error(`MCP server '${action.server}' not found`);
+      }
+      
+      const params = { 
+        ...action.parameters, 
+        business_id: businessId,
+        user_phone: userPhone 
+      };
+      
+      // Add timeout to prevent hanging
+      const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('MCP call timeout')), 30000)
+      );
+      
+      const serverPromise = server.call(action.tool, params);
+      const result = await Promise.race([serverPromise, timeoutPromise]);
+      
+      results.push({ 
+        action: action.tool, 
+        result, 
+        success: true,
+        server: action.server 
+      });
+      
+    } catch (error) {
+      console.error(`Action failed: ${action.tool}`, error);
+      
+      results.push({ 
+        action: action.tool, 
+        error: error.message, 
+        success: false,
+        server: action.server,
+        fallback_available: this.hasFallback(action.tool)
+      });
+      
+      // Try fallback
+      if (this.hasFallback(action.tool)) {
+        const fallbackResult = await this.executeFallback(action.tool, businessId);
+        results.push(fallbackResult);
       }
     }
-    
-    return results;
+  }
+  
+  return results;
+}
+
+
+private hasFallback(toolName: string): boolean {
+  const fallbackTools = ['parse_mpesa_statement', 'create_invoice_from_chat'];
+  return fallbackTools.includes(toolName);
+}
+
+private async executeFallback(toolName: string, businessId: string) {
+  try {
+    switch (toolName) {
+      case 'parse_mpesa_statement':
+        return {
+          action: `${toolName}_fallback`,
+          result: { 
+            message: 'Please send a clearer M-Pesa screenshot or type the transaction details manually',
+            success: false,
+            fallback_used: true
+          },
+          success: true
+        };
+      
+      case 'create_invoice_from_chat':
+        return {
+          action: `${toolName}_fallback`,
+          result: {
+            message: 'Please provide: Customer name, items, quantities, and prices. Example: "Invoice John: 5 bags rice @2000 each"',
+            success: false, 
+            fallback_used: true
+          },
+          success: true
+        };
+        
+      default:
+        return {
+          action: `${toolName}_fallback`,
+          result: { message: 'Service temporarily unavailable. Please try again later.' },
+          success: false
+        };
+    }
+  } catch (error) {
+    return {
+      action: `${toolName}_fallback_failed`,
+      error: error.message,
+      success: false
+    };
   }
 }
+
 
 // Supabase Edge Function Handler - Enhanced for WhatsApp
 Deno.serve(async (req) => {
