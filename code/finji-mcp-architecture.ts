@@ -765,13 +765,12 @@ Respond in a WhatsApp-friendly way:
         user_phone: userPhone 
       };
       
-      // Add timeout to prevent hanging
-      const timeoutPromise = new Promise((_, reject) => 
-        setTimeout(() => reject(new Error('MCP call timeout')), 30000)
+      // Add timeout to prevent hanging with better error context
+      const result = await TimeoutManager.withTimeout(
+      server.call(action.tool, params),
+      25000, // 25 seconds (reduced from 30s for safety margin)
+      `${action.server}.${action.tool} for business ${businessId}`
       );
-      
-      const serverPromise = server.call(action.tool, params);
-      const result = await Promise.race([serverPromise, timeoutPromise]);
       
       results.push({ 
         action: action.tool, 
