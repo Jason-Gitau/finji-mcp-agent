@@ -1034,7 +1034,17 @@ class FinjiAgent {
   }
 
  async processWhatsAppMessage(message: string, businessId: string, userPhone: string, language: 'en' | 'sw' = 'en') {
-  // Step 0: SECURITY - Validate and set business context
+  const startTime = Date.now();
+  
+  try {
+    // Log user interaction
+    await this.monitor.logEvent('user_interaction', {
+      message_length: message.length,
+      language,
+      has_image: message.includes('[Image attached')
+    }, businessId);
+    
+   // Step 0: SECURITY - Validate and set business context
   if (!this.securityManager.validateBusinessId(businessId)) {
     throw new Error('Invalid business identifier provided');
   }
@@ -1058,6 +1068,33 @@ class FinjiAgent {
       intent.intent,
       { intent, userPhone, message }
       );
+      const processingTime = Date.now() - startTime;
+    await this.monitor.trackKPI(businessId, 'response_time_ms', processingTime);
+    
+    if (processingTime > 10000) { // > 10 seconds
+      await this.monitor.logEvent('slow_response', {
+        processing_time: processingTime,
+        message_length: message.length
+      }, businessId);
+    }
+
+    return {
+      response,
+      actions_taken: results.map(r => r.action),
+      language,
+      business_id: businessId,
+      whatsapp_ready: true
+    };
+  } catch (error) {
+    // Log processing failure
+    await this.monitor.logEvent('processing_failed', {
+      error: error.message,
+      processing_time: Date.now() - startTime,
+      message_length: message.length
+    }, businessId);
+    
+    throw error; // Re-throw to maintain error handling
+  }
   
     return {
       response: await this.generateQueuedResponse(intent.intent, language),
