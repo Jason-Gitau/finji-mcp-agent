@@ -586,7 +586,7 @@ Identify the intent and required actions. Common intents:
 
 Consider Kenyan business language patterns and WhatsApp communication style.
 Return JSON with: intent, confidence, required_servers, actions.`;
-
+    try {
     const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -594,11 +594,63 @@ Return JSON with: intent, confidence, required_servers, actions.`;
         contents: [{ parts: [{ text: prompt }] }]
       })
     });
+    if (!response.ok) {
+      throw new Error(`Gemini API failed: ${response.status}`);
+    }
     
     const data = await response.json();
+      
+    // Check if AI response is valid
+    if (!data.candidates?.[0]?.content?.parts?.[0]?.text) {
+      throw new Error('Invalid AI response structure');
+    }
     const jsonText = data.candidates[0].content.parts[0].text;
     return JSON.parse(jsonText.replace(/```json\n?|\n?```/g, ''));
+  }catch (error) {
+    console.error('AI intent analysis failed:', error);
+    
+   // FALLBACK: Basic keyword matching
+    return  this.fallbackIntentAnalysis(message, language);
   }
+}
+  private fallbackIntentAnalysis(message: string, language: string) {
+  const msg = message.toLowerCase();
+  
+  // Simple keyword-based intent detection
+  if (msg.includes('statement') || msg.includes('mpesa') || msg.includes('transaction')) {
+    return {
+      intent: 'parse_mpesa',
+      confidence: 0.7,
+      actions: [{
+        server: 'mpesa_banking',
+        tool: 'parse_mpesa_statement',
+        parameters: { format: 'sms_text' }
+      }]
+    };
+  }
+  
+  if (msg.includes('invoice') || msg.includes('bill')) {
+    return {
+      intent: 'create_invoice',
+      confidence: 0.6,
+      actions: [{
+        server: 'invoice_generation',
+        tool: 'create_invoice_from_chat',
+        parameters: {}
+      }]
+    };
+  }
+  
+  // Default fallback
+  return {
+    intent: 'general_help',
+    confidence: 0.3,
+    actions: [],
+    fallback_message: language === 'sw' ? 
+      'Samahani, sikuelewi. Tafadhali jaribu tena.' :
+      'Sorry, I didn\'t understand. Please try again or contact support.'
+  };
+}
 
   private async generateWhatsAppResponse(query: string, results: any[], language: string) {
     const apiKey = Deno.env.get('GEMINI_API_KEY')!;
