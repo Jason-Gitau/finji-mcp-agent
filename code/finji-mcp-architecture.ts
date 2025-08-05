@@ -955,7 +955,7 @@ private getEstimatedTime(operation: string): string {
   return timeEstimates[operation] || timeEstimates.default;
 }
 
-  private async analyzeWhatsAppIntent(message: string, language: string, context: any) {
+  private async analyzeWhatsAppIntent(message: string, language: string, context: any, businessId: string) {
     const apiKey = Deno.env.get('GEMINI_API_KEY')!;
     
     const prompt = `You are Finji, a Kenyan SME financial assistant. Analyze this WhatsApp message:
@@ -974,6 +974,12 @@ Identify the intent and required actions. Common intents:
 Consider Kenyan business language patterns and WhatsApp communication style.
 Return JSON with: intent, confidence, required_servers, actions.`;
     try {
+      // Check API quota before making call
+    const quotaAvailable = await this.quotaManager.checkAndIncrementQuota(businessId, 'gemini');
+    if (!quotaAvailable) {
+      const quotaStatus = await this.quotaManager.getQuotaStatus(businessId, 'gemini');
+      throw new Error(`API quota exceeded. Resets at ${quotaStatus.resetTime}. Please try again later.`);
+    }
     const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
