@@ -121,6 +121,105 @@ class BusinessSecurityManager {
     return client;
   }
 }
+class APIQuotaManager {
+  private supabase;
+  private quotaLimits = {
+    gemini: { hour: 50, day: 500, month: 10000 },
+    vision: { hour: 100, day: 1000, month: 15000 },
+    whatsapp: { hour: 200, day: 2000, month: 20000 }
+  };
+
+  constructor() {
+    this.supabase = createClient(
+      Deno.env.get('SUPABASE_URL') ?? '',
+      Deno.env.get('SUPABASE_ANON_KEY') ?? ''
+    );
+  }
+
+  async checkAndIncrementQuota(businessId: string, apiType: 'gemini' | 'vision' | 'whatsapp'): Promise<boolean> {
+    const now = new Date();
+    const currentHour = new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours());
+    const nextHour = new Date(currentHour.getTime() + 60 * 60 * 1000);
+
+    try {
+      // Check current hour quota
+      const { data: quota, error } = await this.supabase
+        .from('api_quotas')
+        .select('*')
+        .eq('business_id', businessId)
+        .eq('api_type', apiType)
+        .eq('quota_period', 'hour')
+        .eq('period_start', currentHour.toISOString())
+        .single();
+
+      if (error && error.code !== 'PGRST116') { // Not "not found" error
+        throw error;
+      }
+
+      let currentUsage = 0;
+      if (quota) {
+        currentUsage = quota.quota_used;
+      } else {
+        // Create new quota record for this hour
+        await this.supabase.from('api_quotas').insert({
+          business_id: businessId,
+          api_type: apiType,
+          quota_period: 'hour',
+          quota_limit: this.quotaLimits[apiType].hour,
+          quota_used: 0,
+          period_start: currentHour.toISOString(),
+          period_end: nextHour.toISOString()
+        });
+      }
+
+      // Check if quota exceeded
+      if (currentUsage >= this.quotaLimits[apiType].hour) {
+        return false; // Quota exceeded
+      }
+
+      // Increment quota usage
+      await this.supabase
+        .from('api_quotas')
+        .update({ quota_used: currentUsage + 1 })
+        .eq('business_id', businessId)
+        .eq('api_type', apiType)
+        .eq('quota_period', 'hour')
+        .eq('period_start', currentHour.toISOString());
+
+      return true; // Quota available
+
+    } catch (error) {
+      console.error('Quota check failed:', error);
+      // Fail open - allow request but log error
+      return true;
+    }
+  }
+
+  async getQuotaStatus(businessId: string, apiType: string) {
+    const now = new Date();
+    const currentHour = new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours());
+
+    const { data: quota } = await this.supabase
+      .from('api_quotas')
+      .select('*')
+      .eq('business_id', businessId)
+      .eq('api_type', apiType)
+      .eq('quota_period', 'hour')
+      .eq('period_start', currentHour.toISOString())
+      .single();
+
+    const limit = this.quotaLimits[apiType]?.hour || 50;
+    const used = quota?.quota_used || 0;
+
+    return {
+      limit,
+      used,
+      remaining: limit - used,
+      resetTime: new Date(currentHour.getTime() + 60 * 60 * 1000).toISOString()
+    };
+  }
+}
+
 
 class QueueManager {
   private supabase;
@@ -744,6 +843,7 @@ class FinjiAgent {
   private mcpServers: MCPServer[];
   private queueManager: QueueManager;
   private securityManager: BusinessSecurityManager;
+  private quotaManager: APIQuotaManager;
   
   
   constructor() {
@@ -756,6 +856,7 @@ class FinjiAgent {
     ];
     this.queueManager = new QueueManager();
     this.securityManager = new BusinessSecurityManager();
+    this.quotaManager = new APIQuotaManager();
   }
 
  async processWhatsAppMessage(message: string, businessId: string, userPhone: string, language: 'en' | 'sw' = 'en') {
