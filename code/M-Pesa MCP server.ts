@@ -724,36 +724,26 @@ private getStartDateForPeriod(period: string): string {
 }
 
  
-  private async processImage(base64Data: string): Promise<string> {
-    const googleApiKey = Deno.env.get('GOOGLE_API_KEY');
-    
-    if (!googleApiKey) {
-      throw new Error('Google Vision API key not found');
+  protected async processImage(base64Data: string): Promise<string> {
+    const quotaOk = await this.quotaManager.checkQuota('vision');
+    if (!quotaOk) {
+      throw new Error('Vision API quota exceeded. Please try again later.');
     }
 
-    const response = await fetch(`https://vision.googleapis.com/v1/images:annotate?key=${googleApiKey}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        requests: [{
-          image: { content: base64Data },
-          features: [
-            { type: 'TEXT_DETECTION' },
-            { type: 'DOCUMENT_TEXT_DETECTION' }
-          ]
-        }]
-      })
-    });
-
-    const data = await response.json();
+    const startTime = Date.now();
     
-    if (data.error) {
-      throw new Error(`Vision API error: ${data.error.message}`);
+    try {
+      const result = await super.processImage(base64Data);
+      const responseTime = Date.now() - startTime;
+      await this.quotaManager.logAPIUsage('vision', 'system', true, responseTime);
+      return result;
+    } catch (error) {
+      const responseTime = Date.now() - startTime;
+      await this.quotaManager.logAPIUsage('vision', 'system', false, responseTime);
+      throw error;
     }
-
-    return data.responses[0]?.fullTextAnnotation?.text || 
-           data.responses[0]?.textAnnotations?.[0]?.description || '';
   }
+}
 
    protected async callGeminiWithRetry(prompt: string, maxRetries: number): Promise<Response> {
     // Check quota before making API call
