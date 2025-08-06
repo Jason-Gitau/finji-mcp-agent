@@ -755,8 +755,15 @@ private getStartDateForPeriod(period: string): string {
            data.responses[0]?.textAnnotations?.[0]?.description || '';
   }
 
-  private async callGeminiWithRetry(prompt: string, maxRetries: number = 3): Promise<Response> {
-    const apiKey = Deno.env.get('GEMINI_API_KEY')!;
+   protected async callGeminiWithRetry(prompt: string, maxRetries: number): Promise<Response> {
+    // Check quota before making API call
+    const quotaOk = await this.quotaManager.checkQuota('gemini');
+    if (!quotaOk) {
+      throw new Error('Gemini API quota exceeded. Please try again later.');
+    }
+
+    const startTime = Date.now();
+    let response: Response;
     
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
