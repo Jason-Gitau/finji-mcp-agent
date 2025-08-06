@@ -630,19 +630,25 @@ Return ONLY valid JSON array, no explanations.`;
     return data;
   }
 
-  private async getRecentTransactions(businessId: string, timeWindow: string = '7d'): Promise<MpesaTransaction[]> {
-    const days = timeWindow === '7d' ? 7 : 1;
-    const since = new Date(Date.now() - (days * 24 * 60 * 60 * 1000)).toISOString();
+private async getRecentTransactions(businessId: string, timeWindow: string = '7d'): Promise<MpesaTransaction[]> {
+  const days = timeWindow === '7d' ? 7 : 1;
+  const since = new Date(Date.now() - (days * 24 * 60 * 60 * 1000)).toISOString().split('T')[0];
 
-    const { data, error } = await this.supabase
-      .from('transactions')
-      .select('*')
-      .eq('business_id', businessId)
-      .gte('created_at', since);
+  const { data, error } = await this.supabase
+    .from('transactions')
+    .select('*')
+    .eq('business_id', businessId)      // First in composite index
+    .gte('date', since)                 // Second in composite index  
+    .order('date', { ascending: false }) // Uses index sort order
+    .limit(100);                        // Prevent runaway queries
 
-    return error ? [] : data;
+  if (error) {
+    console.error('Error fetching recent transactions:', error);
+    return [];
   }
 
+  return data || [];
+}
   // Additional helper methods implementation
   private isValidTransaction(t: any): boolean {
     return !!(
