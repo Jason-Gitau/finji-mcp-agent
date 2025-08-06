@@ -1270,35 +1270,42 @@ private async getRecentTransactions(businessId: string, timeWindow: string = '7d
   }
 
   private async getTransactionsByPeriod(businessId: string, period: string): Promise<MpesaTransaction[]> {
-    let startDate: Date;
-    const endDate = new Date();
-    
-    switch (period) {
-      case 'day':
-        startDate = new Date(endDate.getTime() - (24 * 60 * 60 * 1000));
-        break;
-      case 'week':
-        startDate = new Date(endDate.getTime() - (7 * 24 * 60 * 60 * 1000));
-        break;
-      case 'month':
-        startDate = new Date(endDate.getTime() - (30 * 24 * 60 * 60 * 1000));
-        break;
-      case 'quarter':
-        startDate = new Date(endDate.getTime() - (90 * 24 * 60 * 60 * 1000));
-        break;
-      default:
-        startDate = new Date(endDate.getTime() - (30 * 24 * 60 * 60 * 1000));
-    }
-
-    const { data, error } = await this.supabase
-      .from('transactions')
-      .select('*')
-      .eq('business_id', businessId)
-      .gte('date', startDate.toISOString().split('T')[0])
-      .lte('date', endDate.toISOString().split('T')[0]);
-
-    return error ? [] : data;
+  let startDate: Date;
+  const endDate = new Date();
+  
+  switch (period) {
+    case 'day':
+      startDate = new Date(endDate.getTime() - (24 * 60 * 60 * 1000));
+      break;
+    case 'week':
+      startDate = new Date(endDate.getTime() - (7 * 24 * 60 * 60 * 1000));
+      break;
+    case 'month':
+      startDate = new Date(endDate.getTime() - (30 * 24 * 60 * 60 * 1000));
+      break;
+    case 'quarter':
+      startDate = new Date(endDate.getTime() - (90 * 24 * 60 * 60 * 1000));
+      break;
+    default:
+      startDate = new Date(endDate.getTime() - (30 * 24 * 60 * 60 * 1000));
   }
+
+  const { data, error } = await this.supabase
+    .from('transactions')
+    .select('*')
+    .eq('business_id', businessId)      // First in composite index
+    .gte('date', startDate.toISOString().split('T')[0])
+    .lte('date', endDate.toISOString().split('T')[0])
+    .order('date', { ascending: false }) // Uses index sort order
+    .limit(1000);                       // Prevent massive queries
+
+  if (error) {
+    console.error('Error fetching transactions by period:', error);
+    return [];
+  }
+
+  return data || [];
+}
 }
 
 // Main Supabase Edge Function Handler
