@@ -980,8 +980,7 @@ class MemoryLearningMCPServer implements MCPServer {
       }
     }
   ];
-
- async call(toolName: string, parameters: any) {
+   async call(toolName: string, parameters: any) {
   switch (toolName) {
     case "remember_user_preference":
       // Clear cache when storing new preference
@@ -1011,7 +1010,7 @@ class MemoryLearningMCPServer implements MCPServer {
       return { context };
   }
 }
-
+ 
 
 // 4. Enhanced Main Finji Agent
 class FinjiAgent {
