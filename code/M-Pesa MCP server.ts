@@ -39,6 +39,226 @@ interface MCPTool {
   description: string;
   parameters: any;
 }
+1. BUSINESS DATA ISOLATION - Add this to your existing class
+class BusinessSecurityManager {
+  private supabase: any;
+
+  constructor(supabase: any) {
+    this.supabase = supabase;
+  }
+
+  // Add this method to validate business access
+  async validateBusinessAccess(businessId: string, userId: string): Promise<boolean> {
+    if (!businessId || !userId) return false;
+
+    const { data, error } = await this.supabase
+      .from('business_profiles')
+      .select('id')
+      .eq('id', businessId)
+      .eq('owner_id', userId) // Assuming owner_id links to auth user
+      .single();
+
+    return !error && data;
+  }
+
+  // Add this to sanitize business_id in all queries
+  async getBusinessProfile(businessId: string, userId: string): Promise<any> {
+    if (!await this.validateBusinessAccess(businessId, userId)) {
+      throw new Error('Unauthorized access to business data');
+    }
+
+    const { data, error } = await this.supabase
+      .from('business_profiles')
+      .select('*')
+      .eq('id', businessId)
+      .single();
+
+    if (error) throw new Error(`Business not found: ${error.message}`);
+    return data;
+  }
+}
+
+// 2. PERSISTENT RATE LIMITING - Replace your in-memory rate limiting
+class PersistentRateLimit {
+  private supabase: any;
+
+  constructor(supabase: any) {
+    this.supabase = supabase;
+  }
+
+  async checkRateLimit(businessId: string, operation: string, limitPerMinute: number = 60): Promise<boolean> {
+    const now = new Date();
+    const oneMinuteAgo = new Date(now.getTime() - 60000);
+
+    try {
+      // Get current count in the last minute
+      const { data: recentRequests, error: countError } = await this.supabase
+        .from('api_requests_log')
+        .select('id')
+        .eq('business_id', businessId)
+        .eq('operation', operation)
+        .gte('created_at', oneMinuteAgo.toISOString());
+
+      if (countError) {
+        console.error('Rate limit check error:', countError);
+        return true; // Allow on error to avoid blocking legitimate requests
+      }
+
+      const currentCount = recentRequests?.length || 0;
+
+      // Log this request
+      await this.supabase
+        .from('api_requests_log')
+        .insert({
+          business_id: businessId,
+          operation: operation,
+          ip_address: null, // Add if available from request
+          created_at: now.toISOString()
+        });
+
+      return currentCount < limitPerMinute;
+    } catch (error) {
+      console.error('Rate limiting error:', error);
+      return true; // Allow on error
+    }
+  }
+
+  // Cleanup old records periodically
+  async cleanupOldRecords(): Promise<void> {
+    const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    
+    await this.supabase
+      .from('api_requests_log')
+      .delete()
+      .lt('created_at', oneDayAgo.toISOString());
+  }
+}
+
+// 3. API QUOTA MANAGEMENT - Add this class
+class APIQuotaManager {
+  private supabase: any;
+  private quotas = {
+    gemini: { daily: 1000, monthly: 30000 },
+    vision: { daily: 500, monthly: 15000 }
+  };
+
+  constructor(supabase: any) {
+    this.supabase = supabase;
+  }
+
+  async checkQuota(service: 'gemini' | 'vision'): Promise<boolean> {
+    const today = new Date().toISOString().split('T')[0];
+    const thisMonth = new Date().toISOString().substring(0, 7); // YYYY-MM
+
+    try {
+      // Check daily usage
+      const { data: dailyUsage, error: dailyError } = await this.supabase
+        .from('api_usage_log')
+        .select('id')
+        .eq('service', service)
+        .gte('created_at', `${today}T00:00:00.000Z`)
+        .lt('created_at', `${today}T23:59:59.999Z`);
+
+      if (dailyError) {
+        console.error('Daily quota check error:', dailyError);
+        return true;
+      }
+
+      const dailyCount = dailyUsage?.length || 0;
+      if (dailyCount >= this.quotas[service].daily) {
+        console.warn(`Daily quota exceeded for ${service}: ${dailyCount}/${this.quotas[service].daily}`);
+        return false;
+      }
+
+      // Check monthly usage
+      const { data: monthlyUsage, error: monthlyError } = await this.supabase
+        .from('api_usage_log')
+        .select('id')
+        .eq('service', service)
+        .gte('created_at', `${thisMonth}-01T00:00:00.000Z`);
+
+      if (monthlyError) {
+        console.error('Monthly quota check error:', monthlyError);
+        return true;
+      }
+
+      const monthlyCount = monthlyUsage?.length || 0;
+      if (monthlyCount >= this.quotas[service].monthly) {
+        console.warn(`Monthly quota exceeded for ${service}: ${monthlyCount}/${this.quotas[service].monthly}`);
+        return false;
+      }
+
+      return true;
+    } catch (error) {
+      console.error('Quota check error:', error);
+      return true; // Allow on error
+    }
+  }
+
+  async logAPIUsage(service: 'gemini' | 'vision', businessId: string, success: boolean, responseTime?: number): Promise<void> {
+    try {
+      await this.supabase
+        .from('api_usage_log')
+        .insert({
+          service,
+          business_id: businessId,
+          success,
+          response_time_ms: responseTime,
+          created_at: new Date().toISOString()
+        });
+    } catch (error) {
+      console.error('Failed to log API usage:', error);
+    }
+  }
+}
+
+// 4. BASIC MONITORING - Add this to your existing class methods
+class ProductionLogger {
+  private supabase: any;
+
+  constructor(supabase: any) {
+    this.supabase = supabase;
+  }
+
+  async logOperation(operation: string, businessId: string, duration: number, success: boolean, error?: string): Promise<void> {
+    try {
+      // Console logging for immediate debugging
+      const logLevel = success ? 'INFO' : 'ERROR';
+      const timestamp = new Date().toISOString();
+      
+      console.log(`[${logLevel}] ${timestamp}: ${operation} - Business: ${businessId}, Duration: ${duration}ms, Success: ${success}${error ? `, Error: ${error}` : ''}`);
+
+      // Database logging for persistence and monitoring
+      await this.supabase
+        .from('operation_logs')
+        .insert({
+          operation,
+          business_id: businessId,
+          duration_ms: duration,
+          success,
+          error_message: error,
+          created_at: timestamp
+        });
+    } catch (logError) {
+      console.error('Logging failed:', logError);
+    }
+  }
+
+  async logMetric(metric_name: string, value: number, businessId?: string): Promise<void> {
+    try {
+      await this.supabase
+        .from('metrics_log')
+        .insert({
+          metric_name,
+          value,
+          business_id: businessId,
+          created_at: new Date().toISOString()
+        });
+    } catch (error) {
+      console.error('Metric logging failed:', error);
+    }
+  }
+}
 
 // Enhanced M-Pesa MCP Server for Supabase Edge Functions
 class MpesaMCPServer {
