@@ -237,6 +237,33 @@ class MonitoringManager {
       Deno.env.get('SUPABASE_ANON_KEY') ?? ''
     );
   }
+  // In MonitoringManager class, add this method
+public async logDatabasePerformance() {
+  const dbHealth = await dbManager.healthCheck();
+  const cacheStats = cacheManager.getStats();
+  
+  await this.logEvent('database_performance', {
+    db_healthy: dbHealth.healthy,
+    db_latency_ms: dbHealth.latency,
+    cache_hit_rate: cacheStats.hitRate,
+    cache_entries: cacheStats.totalEntries,
+    cache_memory_mb: cacheStats.memoryUsageMB
+  });
+  
+  // Alert if database is slow
+  if (dbHealth.latency > 1000) {
+    await this.logEvent('slow_database', {
+      latency: dbHealth.latency
+    });
+  }
+  
+  // Alert if cache hit rate is low
+  if (cacheStats.hitRate < 0.5 && cacheStats.totalEntries > 10) {
+    await this.logEvent('low_cache_hit_rate', {
+      hit_rate: cacheStats.hitRate
+    });
+  }
+}
 
   // Log structured events for monitoring
   async logEvent(eventType: string, data: any, businessId?: string) {
