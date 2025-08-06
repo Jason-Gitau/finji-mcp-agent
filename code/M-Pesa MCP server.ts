@@ -1306,6 +1306,85 @@ private async getRecentTransactions(businessId: string, timeWindow: string = '7d
 
   return data || [];
 }
+  
+private async getBusinessIncome(businessId: string, startDate: string, endDate: string) {
+  const { data, error } = await this.supabase
+    .from('transactions')
+    .select('amount, date, counterparty')
+    .eq('business_id', businessId)      // First in index
+    .eq('type', 'received')             // Second in index
+    .gte('date', startDate)             // Third in index
+    .lte('date', endDate)
+    .order('date', { ascending: false });
+
+  if (error) {
+    console.error('Error fetching business income:', error);
+    return [];
+  }
+
+  return data || [];
+}
+
+private async findDuplicateTransactions(businessId: string, hours: number = 24) {
+  const since = new Date(Date.now() - (hours * 60 * 60 * 1000)).toISOString().split('T')[0];
+  
+  const { data, error } = await this.supabase
+    .from('transactions')
+    .select('*')
+    .eq('business_id', businessId)
+    .gte('date', since)
+    .order('amount', { ascending: false })  // Uses index
+    .order('date', { ascending: false })
+    .limit(500);                            // Reasonable limit
+
+  if (error) {
+    console.error('Error finding duplicates:', error);
+    return [];
+  }
+
+  // Group by amount + counterparty in application code
+  return this.findDuplicatesInResults(data || []);
+}
+
+private findDuplicatesInResults(transactions: any[]) {
+  const duplicates = [];
+  const seen = new Map();
+
+  for (const transaction of transactions) {
+    const key = `${transaction.amount}_${transaction.counterparty}_${transaction.date}`;
+    
+    if (seen.has(key)) {
+      duplicates.push({
+        original: seen.get(key),
+        duplicate: transaction,
+        amount: transaction.amount,
+        confidence: 0.9
+      });
+    } else {
+      seen.set(key, transaction);
+    }
+  }
+
+  return duplicates;
+}
+
+// Optimized search using text search index
+private async searchTransactions(businessId: string, searchTerm: string, limit: number = 50) {
+  const { data, error } = await this.supabase
+    .from('transactions')
+    .select('*')
+    .eq('business_id', businessId)
+    .textSearch('search_text', searchTerm)  // Uses GIN index
+    .order('date', { ascending: false })
+    .limit(limit);
+
+  if (error) {
+    console.error('Error searching transactions:', error);
+    return [];
+  }
+
+  return data || [];
+}
 }
 
 // Main Supabase Edge Function Handler
