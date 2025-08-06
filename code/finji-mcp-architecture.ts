@@ -1,6 +1,8 @@
 // Enhanced Finji - MCP-Based Financial Agent for Kenyan SMEs
 // Combines domain-specific tools with memory and knowledge capabilities
 import "jsr:@supabase/functions-js/edge-runtime.d.ts"
+import { dbManager } from './shared/db-manager.ts';
+import { cacheManager } from './shared/cache-manager.ts';
 
 // Base MCP Server interface
 interface MCPServer {
@@ -73,11 +75,15 @@ class BusinessSecurityManager {
   private supabase;
   
   constructor() {
-    this.supabase = createClient(
-      Deno.env.get('SUPABASE_URL') ?? '',
-      Deno.env.get('SUPABASE_ANON_KEY') ?? ''
-    );
+  // No need to create client - use shared manager
+}
+
+async setBusinessContext(businessId: string) {
+  if (!businessId || businessId.trim() === '') {
+    throw new Error('Business ID cannot be empty - security violation');
   }
+  // Context setting is handled by dbManager.getBusinessClient()
+}
 
   // Set business context for all database operations
   async setBusinessContext(businessId: string) {
@@ -128,72 +134,74 @@ class APIQuotaManager {
     vision: { hour: 100, day: 1000, month: 15000 },
     whatsapp: { hour: 200, day: 2000, month: 20000 }
   };
-
-  constructor() {
-    this.supabase = createClient(
-      Deno.env.get('SUPABASE_URL') ?? '',
-      Deno.env.get('SUPABASE_ANON_KEY') ?? ''
-    );
-  }
-
+   constructor() {
+  // Use shared database manager
+}
   async checkAndIncrementQuota(businessId: string, apiType: 'gemini' | 'vision' | 'whatsapp'): Promise<boolean> {
-    const now = new Date();
-    const currentHour = new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours());
-    const nextHour = new Date(currentHour.getTime() + 60 * 60 * 1000);
+  // Cache quota checks for 1 minute
+  const cacheKey = `quota:${apiType}`;
+  
+  return await cacheManager.cached(
+    cacheKey,
+    businessId,
+    async () => {
+      return await dbManager.executeQuery(async (client) => {
+        const now = new Date();
+        const currentHour = new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours());
+        const nextHour = new Date(currentHour.getTime() + 60 * 60 * 1000);
 
-    try {
-      // Check current hour quota
-      const { data: quota, error } = await this.supabase
-        .from('api_quotas')
-        .select('*')
-        .eq('business_id', businessId)
-        .eq('api_type', apiType)
-        .eq('quota_period', 'hour')
-        .eq('period_start', currentHour.toISOString())
-        .single();
+        // Check current hour quota
+        const { data: quota, error } = await client
+          .from('api_quotas')
+          .select('*')
+          .eq('business_id', businessId)
+          .eq('api_type', apiType)
+          .eq('quota_period', 'hour')
+          .eq('period_start', currentHour.toISOString())
+          .single();
 
-      if (error && error.code !== 'PGRST116') { // Not "not found" error
-        throw error;
-      }
+        if (error && error.code !== 'PGRST116') {
+          throw error;
+        }
 
-      let currentUsage = 0;
-      if (quota) {
-        currentUsage = quota.quota_used;
-      } else {
-        // Create new quota record for this hour
-        await this.supabase.from('api_quotas').insert({
-          business_id: businessId,
-          api_type: apiType,
-          quota_period: 'hour',
-          quota_limit: this.quotaLimits[apiType].hour,
-          quota_used: 0,
-          period_start: currentHour.toISOString(),
-          period_end: nextHour.toISOString()
-        });
-      }
+        let currentUsage = 0;
+        if (quota) {
+          currentUsage = quota.quota_used;
+        } else {
+          // Create new quota record
+          await client.from('api_quotas').insert({
+            business_id: businessId,
+            api_type: apiType,
+            quota_period: 'hour',
+            quota_limit: this.quotaLimits[apiType].hour,
+            quota_used: 0,
+            period_start: currentHour.toISOString(),
+            period_end: nextHour.toISOString()
+          });
+        }
 
-      // Check if quota exceeded
-      if (currentUsage >= this.quotaLimits[apiType].hour) {
-        return false; // Quota exceeded
-      }
+        // Check if quota exceeded
+        if (currentUsage >= this.quotaLimits[apiType].hour) {
+          return false;
+        }
 
-      // Increment quota usage
-      await this.supabase
-        .from('api_quotas')
-        .update({ quota_used: currentUsage + 1 })
-        .eq('business_id', businessId)
-        .eq('api_type', apiType)
-        .eq('quota_period', 'hour')
-        .eq('period_start', currentHour.toISOString());
+        // Increment quota usage
+        await client
+          .from('api_quotas')
+          .update({ quota_used: currentUsage + 1 })
+          .eq('business_id', businessId)
+          .eq('api_type', apiType)
+          .eq('quota_period', 'hour')
+          .eq('period_start', currentHour.toISOString());
 
-      return true; // Quota available
+        return true;
+      }, businessId);
+    },
+    60 * 1000 // Cache for 1 minute
+  );
+}
 
-    } catch (error) {
-      console.error('Quota check failed:', error);
-      // Fail open - allow request but log error
-      return true;
-    }
-  }
+ 
 
   async getQuotaStatus(businessId: string, apiType: string) {
     const now = new Date();
