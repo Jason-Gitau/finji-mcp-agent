@@ -536,6 +536,44 @@ class QueueManager {
     }
     return chunks;
   }
+  
+private async processTransactionChunk(transactions: any[], businessId: string) {
+  const results = [];
+  
+  // Use batch insert for better performance
+  const { data, error } = await this.supabase
+    .from('transactions')
+    .insert(
+      transactions.map(t => ({
+        ...t,
+        business_id: businessId,
+        created_at: new Date().toISOString()
+      }))
+    )
+    .select();
+
+  if (error) {
+    console.error('Batch insert failed:', error);
+    // Fallback to individual inserts
+    for (const transaction of transactions) {
+      try {
+        const { data: singleResult } = await this.supabase
+          .from('transactions')
+          .insert({ ...transaction, business_id: businessId })
+          .select()
+          .single();
+        
+        if (singleResult) results.push(singleResult);
+      } catch (err) {
+        console.error('Individual insert failed:', err);
+      }
+    }
+  } else {
+    results.push(...(data || []));
+  }
+
+  return results;
+}
 }
 
 
