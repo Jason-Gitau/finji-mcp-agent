@@ -347,12 +347,46 @@ class MpesaMCPServer {
   }
 
   // Main call handler
-  async call(toolName: string, parameters: any): Promise<any> {
+  async call(toolName: string, parameters: any, userId?: string) {
+     const startTime = Date.now();
+    const businessId = parameters?.business_id;
+    
     try {
-      // Rate limiting check
-      if (!this.checkRateLimit(toolName)) {
+      // 1. Business data isolation check
+      if (businessId && userId) {
+        const hasAccess = await this.securityManager.validateBusinessAccess(businessId, userId);
+        if (!hasAccess) {
+          throw new Error('Unauthorized access to business data');
+        }
+      }
+      
+      // 2. Rate limiting check
+      const rateLimitOk = await this.rateLimit.checkRateLimit(businessId, toolName, 60);
+      if (!rateLimitOk) {
         throw new Error('Rate limit exceeded. Please wait before making another request.');
       }
+
+      // 3. Call your existing implementation
+      const result = await super.call(toolName, parameters);
+
+      // 4. Log successful operation
+      const duration = Date.now() - startTime;
+      await this.logger.logOperation(toolName, businessId, duration, true);
+      await this.logger.logMetric('successful_operations', 1, businessId);
+
+      return result;
+      // 5. Log failed operation
+      const duration = Date.now() - startTime;
+      await this.logger.logOperation(toolName, businessId, duration, false, error.message);
+      await this.logger.logMetric('failed_operations', 1, businessId);
+
+      return {
+        success: false,
+        error: error.message,
+        timestamp: new Date().toISOString()
+      };
+    
+
 
       switch (toolName) {
         case "parse_mpesa_statement":
