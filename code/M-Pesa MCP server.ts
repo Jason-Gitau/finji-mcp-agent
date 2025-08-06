@@ -348,74 +348,62 @@ class MpesaMCPServer {
 
   // Main call handler
   async call(toolName: string, parameters: any, userId?: string) {
-     const startTime = Date.now();
-    const businessId = parameters?.business_id;
-    
-    try {
-      // 1. Business data isolation check
-      if (businessId && userId) {
-        const hasAccess = await this.securityManager.validateBusinessAccess(businessId, userId);
-        if (!hasAccess) {
-          throw new Error('Unauthorized access to business data');
-        }
-      }
-      
-      // 2. Rate limiting check
-      const rateLimitOk = await this.rateLimit.checkRateLimit(businessId, toolName, 60);
-      if (!rateLimitOk) {
-        throw new Error('Rate limit exceeded. Please wait before making another request.');
-      }
+   const startTime = Date.now();
+   const businessId = parameters?.business_id;
+   
+   try {
+     // 1. Business data isolation check
+     if (businessId && userId) {
+       const hasAccess = await this.securityManager.validateBusinessAccess(businessId, userId);
+       if (!hasAccess) {
+         throw new Error('Unauthorized access to business data');
+       }
+     }
+     
+     // 2. Rate limiting check
+     const rateLimitOk = await this.rateLimit.checkRateLimit(businessId, toolName, 60);
+     if (!rateLimitOk) {
+       throw new Error('Rate limit exceeded. Please wait before making another request.');
+     }
 
-      // 3. Call your existing implementation
-      const result = await super.call(toolName, parameters);
+     // 3. Call your existing implementation
+     const result = await super.call(toolName, parameters);
 
-      // 4. Log successful operation
-      const duration = Date.now() - startTime;
-      await this.logger.logOperation(toolName, businessId, duration, true);
-      await this.logger.logMetric('successful_operations', 1, businessId);
+     // 4. Log successful operation
+     const duration = Date.now() - startTime;
+     await this.logger.logOperation(toolName, businessId, duration, true);
+     await this.logger.logMetric('successful_operations', 1, businessId);
 
-      return result;
-      // 5. Log failed operation
-      const duration = Date.now() - startTime;
-      await this.logger.logOperation(toolName, businessId, duration, false, error.message);
-      await this.logger.logMetric('failed_operations', 1, businessId);
+     return result;
 
-      return {
-        success: false,
-        error: error.message,
-        timestamp: new Date().toISOString()
-      };
-    
+     // 5. Log failed operation
+     const duration = Date.now() - startTime;
+     await this.logger.logOperation(toolName, businessId, duration, false, error.message);
+     await this.logger.logMetric('failed_operations', 1, businessId);
 
+     return {
+       success: false,
+       error: error.message,
+       timestamp: new Date().toISOString()
+     };
 
-      switch (toolName) {
-        case "parse_mpesa_statement":
-          return await this.parseMpesaStatement(parameters);
-        
-        case "categorize_transactions":
-          return await this.categorizeTransactions(parameters);
-        
-        case "detect_anomalies":
-          return await this.detectAnomalies(parameters);
-        
-        case "get_transaction_insights":
-          return await this.getTransactionInsights(parameters);
-        
-        case "reconcile_with_books":
-          return await this.reconcileWithBooks(parameters);
-        
-        default:
-          throw new Error(`Unknown tool: ${toolName}`);
-      }
-    } catch (error) {
-      console.error(`Error in ${toolName}:`, error);
-      return {
-        success: false,
-        error: error.message,
-        timestamp: new Date().toISOString()
-      };
-    }
-  }
+     switch (toolName) {
+       case "parse_mpesa_statement":
+         return await this.parseMpesaStatement(parameters);
+       // ...other cases
+       default:
+         throw new Error(`Unknown tool: ${toolName}`);
+     }
+   } catch (error) {
+     console.error(`Error in ${toolName}:`, error);
+     return {
+       success: false,
+       error: error.message,
+       timestamp: new Date().toISOString()
+     };
+   }
+ }
+  
 
   // 1. ENHANCED TRANSACTION PARSING with 2025 M-Pesa formats
   private async parseMpesaStatement(params: any): Promise<any> {
