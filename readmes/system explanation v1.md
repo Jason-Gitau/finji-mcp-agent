@@ -1001,3 +1001,4 @@ That's Finji MCP fixed! The key issues we addressed:
 4. **Invalid requests** → Proper validation + error codes
 5. **Missing error context** → Detailed error logging
 
+
