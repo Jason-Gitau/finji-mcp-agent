@@ -1033,18 +1033,19 @@ private async getRecentTransactions(businessId: string, timeWindow: string = '7d
   }
 
   // Business Intelligence Methods
-  private calculateRevenueInsights(transactions: MpesaTransaction[]): any {
-    const revenueTransactions = transactions.filter(t => t.type === 'received');
-    const totalRevenue = revenueTransactions.reduce((sum, t) => sum + t.amount, 0);
-    
-    return {
-      total_revenue: totalRevenue,
-      transaction_count: revenueTransactions.length,
-      average_transaction: revenueTransactions.length > 0 ? totalRevenue / revenueTransactions.length : 0,
-      peak_day: this.findPeakDay(revenueTransactions),
-      growth_trend: this.calculateGrowthTrend(revenueTransactions)
-    };
-  }
+ private async calculateRevenueInsights(businessId: string, startDate: string, endDate: string): Promise<any> {
+  // Use optimized query instead of filtering in memory
+  const revenueTransactions = await this.getBusinessIncome(businessId, startDate, endDate);
+  const totalRevenue = revenueTransactions.reduce((sum, t) => sum + t.amount, 0);
+  
+  return {
+    total_revenue: totalRevenue,
+    transaction_count: revenueTransactions.length,
+    average_transaction: revenueTransactions.length > 0 ? totalRevenue / revenueTransactions.length : 0,
+    peak_day: this.findPeakDay(revenueTransactions),
+    growth_trend: this.calculateGrowthTrend(revenueTransactions)
+  };
+}
 
   private calculateExpenseInsights(transactions: MpesaTransaction[]): any {
     const expenseTransactions = transactions.filter(t => 
