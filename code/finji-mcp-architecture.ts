@@ -981,38 +981,34 @@ class MemoryLearningMCPServer implements MCPServer {
     }
   ];
 
-  async call(toolName: string, parameters: any) {
-    const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
-    const supabaseKey = Deno.env.get('SUPABASE_ANON_KEY')!;
-
-    switch (toolName) {
-      case "remember_user_preference":
-        await fetch(`${supabaseUrl}/rest/v1/business_memory`, {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${supabaseKey}`,
-            'Content-Type': 'application/json',
-            'apikey': supabaseKey
-          },
-          body: JSON.stringify({
+ async call(toolName: string, parameters: any) {
+  switch (toolName) {
+    case "remember_user_preference":
+      // Clear cache when storing new preference
+      CachedQueries.invalidateBusinessCache(parameters.business_id);
+      
+      await dbManager.executeQuery(async (client) => {
+        const { error } = await client
+          .from('business_memory')
+          .insert({
             business_id: parameters.business_id,
             preference_type: parameters.preference_type,
             data: parameters.preference_data,
             created_at: new Date().toISOString()
-          })
-        });
-        return { stored: true };
+          });
+        
+        if (error) throw error;
+      }, parameters.business_id);
+      
+      return { stored: true };
 
-      case "get_business_context":
-        const response = await fetch(`${supabaseUrl}/rest/v1/business_memory?business_id=eq.${parameters.business_id}&preference_type=eq.${parameters.context_type}`, {
-          headers: {
-            'Authorization': `Bearer ${supabaseKey}`,
-            'apikey': supabaseKey
-          }
-        });
-        const context = await response.json();
-        return { context };
-    }
+    case "get_business_context":
+      // Use cached query
+      const context = await CachedQueries.getBusinessContext(
+        parameters.business_id, 
+        parameters.context_type
+      );
+      return { context };
   }
 }
 
