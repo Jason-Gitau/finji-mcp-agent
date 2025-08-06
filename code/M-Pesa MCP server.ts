@@ -414,33 +414,62 @@ Return ONLY valid JSON array, no explanations.`;
   }
 
   // 5. TRANSACTION INSIGHTS
-  private async getTransactionInsights(params: any): Promise<any> {
-    const { business_id, period = 'month', metrics = ['revenue', 'expenses', 'trends'] } = params;
+ private async getTransactionInsights(params: any): Promise<any> {
+  const { business_id, period = 'month', metrics = ['revenue', 'expenses', 'trends'] } = params;
     
-    const transactions = await this.getTransactionsByPeriod(business_id, period);
-    const insights: any = {
-      success: true,
-      business_id,
-      period,
-      transaction_count: transactions.length
-    };
+  // Calculate date range
+  const endDate = new Date().toISOString().split('T')[0];
+  const startDate = this.getStartDateForPeriod(period);
+  
+  const insights: any = {
+    success: true,
+    business_id,
+    period,
+    date_range: { startDate, endDate }
+  };
 
-    if (metrics.includes('revenue')) {
-      insights.revenue = this.calculateRevenueInsights(transactions);
-    }
-
-    if (metrics.includes('expenses')) {
-      insights.expenses = this.calculateExpenseInsights(transactions);
-    }
-
-    if (metrics.includes('trends')) {
-      insights.trends = this.calculateTrendInsights(transactions);
-    }
-
-    return insights;
+  if (metrics.includes('revenue')) {
+    insights.revenue = await this.calculateRevenueInsights(business_id, startDate, endDate);
   }
 
-  // Helper Methods
+  if (metrics.includes('expenses')) {
+    insights.expenses = await this.calculateExpenseInsights(business_id, startDate, endDate);
+  }
+
+  if (metrics.includes('trends')) {
+    const transactions = await this.getTransactionsByPeriod(business_id, period);
+    insights.trends = this.calculateTrendInsights(transactions);
+  }
+
+  return insights;
+}
+
+ // Helper Methods
+private getStartDateForPeriod(period: string): string {
+  const now = new Date();
+  let startDate: Date;
+  
+  switch (period) {
+    case 'day':
+      startDate = new Date(now.getTime() - (24 * 60 * 60 * 1000));
+      break;
+    case 'week':
+      startDate = new Date(now.getTime() - (7 * 24 * 60 * 60 * 1000));
+      break;
+    case 'month':
+      startDate = new Date(now.getTime() - (30 * 24 * 60 * 60 * 1000));
+      break;
+    case 'quarter':
+      startDate = new Date(now.getTime() - (90 * 24 * 60 * 60 * 1000));
+      break;
+    default:
+      startDate = new Date(now.getTime() - (30 * 24 * 60 * 60 * 1000));
+  }
+  
+  return startDate.toISOString().split('T')[0];
+}
+
+ 
   private async processImage(base64Data: string): Promise<string> {
     const googleApiKey = Deno.env.get('GOOGLE_API_KEY');
     
